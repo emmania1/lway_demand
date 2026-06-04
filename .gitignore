@@ -1,0 +1,24 @@
+# Virtualenv
+venv/
+.venv/
+env/
+*.egg-info/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets
+.env
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Large background-task logs
+/tmp/
+*.log

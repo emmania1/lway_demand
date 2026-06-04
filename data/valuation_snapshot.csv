@@ -1,0 +1,9 @@
+kind,label,value,range_low,range_high,note
+current,Current price,23.83,,,Late May 2026 close
+anchor,Danone bid ($27 · withdrawn),27.00,,,Withdrawn Sep 18 2025 — premium reference
+anchor,Danone first bid ($25),25.00,,,Sep 2024 initial proposal
+multiple,EV/Sales (current),1.4,1.0,2.2,
+multiple,EV/EBITDA (trailing),13.0,9.0,16.0,
+multiple,P/E (trailing),22.0,15.0,30.0,
+scenario,Stand-alone base,26.0,,,FY27 Adj-EBITDA ~$45M × ~11x EV/EBITDA
+scenario,Strategic re-bid,30.0,,,Danone or another acquirer returns at/above $27

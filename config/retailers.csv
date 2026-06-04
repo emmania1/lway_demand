@@ -1,0 +1,13 @@
+key,display_name,channel,priority,notes
+kroger,Kroger,grocery,core,Largest grocery footprint
+walmart,Walmart,mass,core,Mass penetration — big volume driver
+costco,Costco,club,core,Club-pack — key velocity account for kefir
+target,Target,mass,core,Distribution expansion vector
+whole_foods,Whole Foods,natural,core,Natural channel anchor
+albertsons,Albertsons / Safeway,grocery,core,
+publix,Publix,grocery,growth,Southeast US
+heb,H-E-B,grocery,growth,Texas
+sprouts,Sprouts Farmers Market,natural,growth,
+wegmans,Wegmans,grocery,growth,Northeast
+amazon_fresh,Amazon Fresh,ecom,growth,
+instacart,Instacart,ecom,core,Cross-banner ecom proxy
