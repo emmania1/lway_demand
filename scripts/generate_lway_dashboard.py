@@ -61,6 +61,8 @@ Q1_2026_SALES = 63.0
 Q1_2026_SALES_YOY = 37
 Q1_2026_GM = 27.5
 CURRENT_PRICE_FALLBACK = 23.83
+CURRENT_PRICE_FALLBACK_ASOF = "2026-05-29"  # date the fallback close represents (verify each refresh)
+PRICE_STALE_DAYS = 5  # flag the quote as stale if the last live close is older than this
 
 # ── Topic / brand / reaction color maps ────────────────────────────────────
 TOPIC_ORDER = ["takeover", "governance", "financial", "launch", "category", "health", "other"]
@@ -271,12 +273,20 @@ def _rolling_mean(vals: list, window: int = 4) -> list:
 # ── Section compute functions ──────────────────────────────────────────────
 def compute_quick_read(D: dict) -> dict:
     stock = D["stock"]
-    last_close, last_date = CURRENT_PRICE_FALLBACK, None
+    # Prefer the live fetched close; fall back to the dated constant only as a
+    # last resort, and never present a price without an as-of date + staleness flag.
+    last_close, last_date, source = CURRENT_PRICE_FALLBACK, CURRENT_PRICE_FALLBACK_ASOF, "fallback"
     if not stock.empty and "close" in stock.columns:
         s = stock.dropna(subset=["close"]).sort_values("date")
         if not s.empty:
             last_close = float(s.iloc[-1]["close"])
             last_date = str(s.iloc[-1]["date"])
+            source = "live"
+    try:
+        stale_days = (GENERATED_AT.date() - pd.to_datetime(last_date).date()).days
+    except Exception:
+        stale_days = None
+    stale = (source == "fallback") or (stale_days is not None and stale_days > PRICE_STALE_DAYS)
     discount = (DANONE_BID_2 - last_close) / DANONE_BID_2 * 100.0
     timeline = []
     cat = D["catalysts"]
@@ -293,6 +303,9 @@ def compute_quick_read(D: dict) -> dict:
     return {
         "last_close": round(last_close, 2),
         "last_date": last_date,
+        "price_source": source,
+        "stale": stale,
+        "stale_days": stale_days,
         "discount": round(discount, 1),
         "control": round(FAMILY_PCT + DANONE_PCT, 2),
         "family": FAMILY_PCT, "danone": DANONE_PCT,
@@ -789,7 +802,11 @@ def render_callouts(section: str, M: dict, D: dict) -> str:
 
 
 def render_quick_read(D: dict, qr: dict) -> str:
-    close_sub = f"as of {qr['last_date']}" if qr["last_date"] else "fallback — run the stock fetcher"
+    close_sub = f"as of {qr['last_date']}"
+    if qr["price_source"] == "fallback":
+        close_sub += ' <span class="callout-flag">fallback · run fetcher</span>'
+    elif qr["stale"]:
+        close_sub += f' <span class="callout-flag">stale · {qr["stale_days"]}d old</span>'
     disc_cls = "neg" if qr["discount"] > 0 else "pos"
     tiles = [
         ("Last close", fmt_num(qr["last_close"], dollars=True, dp=2), close_sub, ""),
@@ -1029,7 +1046,8 @@ def render_summary_modal(D: dict, qr: dict, fin: dict) -> str:
         f"<p><strong>Lifeway Foods ({TICKER})</strong> is a control situation wrapped around a compounding category story. "
         f"Danone bid ${DANONE_BID_1:.0f} then ${DANONE_BID_2:.0f} a share before withdrawing on {DANONE_WITHDRAW_DATE}, "
         f"leaving a ~{DANONE_PCT:.0f}% strategic stake and a cooperation agreement in place. The stock last printed "
-        f"{fmt_num(qr['last_close'], dollars=True, dp=2)}, a {fmt_pct(qr['discount'])} discount to the withdrawn ${DANONE_BID_2:.0f} bid.</p>")
+        f"{fmt_num(qr['last_close'], dollars=True, dp=2)} (as of {qr['last_date']}), a {fmt_pct(qr['discount'])} "
+        f"discount to the withdrawn ${DANONE_BID_2:.0f} bid.</p>")
     paras.append(
         f"<p>Control is genuinely contested. The founding Smolyansky family's dissident bloc holds {qr['family']:.1f}% and is "
         f"running a slate against CEO Julie Smolyansky and the board; combined with Danone's stake, {qr['control']:.1f}% of the "

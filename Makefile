@@ -1,4 +1,6 @@
-PY := venv/bin/python
+# Prefer the project venv (created by `make install`); otherwise fall back to a
+# system python3 that already has the deps, so `make generate` runs from a clone.
+PY := $(shell [ -x venv/bin/python ] && echo venv/bin/python || echo python3)
 
 .PHONY: help refresh-data refresh-fast generate venv install clean-data
 
