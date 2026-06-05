@@ -240,6 +240,8 @@ def load_all() -> dict:
         "catalysts": safe_read(DATA / "forward_catalysts.csv"),
         "category_growth": safe_read(DATA / "category_growth.csv"),
         "ownership": safe_read(DATA / "ownership.csv"),
+        "callouts": safe_read(DATA / "callouts.csv"),
+        "regime_cluster": safe_read(DATA / "regime_cluster.csv"),
     }
 
 
@@ -493,6 +495,165 @@ def compute_demand_vs_stock(D: dict) -> dict:
     return {"weeks": weeks, "demand_z": demand_z, "stock_idx": stock_idx}
 
 
+# ── Anchored-callout engine ─────────────────────────────────────────────────
+# Every interpretive line (callouts, the three-forces status metrics, the
+# framer answers) is a template whose {placeholders} are filled from computed
+# or dated-seed metrics. fill_template records which metrics each line used —
+# and any it could NOT anchor — into CALLOUT_LEDGER, which main() writes out as
+# an audit so opinion-only statements can't slip in unnoticed.
+CALLOUT_LEDGER: list[dict] = []
+_PLACEHOLDER = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+
+
+def fill_template(tmpl: str, M: dict, *, where: str = "", kind: str = "") -> str:
+    used, missing = [], []
+
+    def repl(m):
+        k = m.group(1)
+        v = M.get(k)
+        if v is None or v == "":
+            missing.append(k)
+            return "{" + k + "}"
+        used.append(k)
+        return str(v)
+
+    out = _PLACEHOLDER.sub(repl, tmpl)
+    CALLOUT_LEDGER.append({
+        "where": where, "kind": kind, "text": tmpl,
+        "used": used, "missing": missing,
+        "anchored": bool(used) and not missing,
+    })
+    return out
+
+
+def _last_non_null(vals: list):
+    for v in reversed(vals or []):
+        if v is not None:
+            return v
+    return None
+
+
+def compute_metrics(D, qr, fin, brand, milk, demand) -> dict:
+    """Flatten every anchorable number into one {key: display_string} dict.
+
+    Values are pre-formatted strings (or None when the underlying series is
+    missing, which fill_template then flags). Thresholds tagged 'seed' are
+    analyst-chosen watch levels, not computed — called out in the ledger."""
+    today = GENERATED_AT.date()
+    M: dict = {}
+
+    def dd(date_str):
+        try:
+            return (pd.to_datetime(date_str).date() - today).days
+        except Exception:
+            return None
+
+    # — price / control —
+    M["last_close"] = fmt_num(qr["last_close"], dollars=True, dp=2)
+    M["last_date"] = qr["last_date"] or None
+    M["discount_bid2"] = f"{qr['discount']:.0f}"
+    M["bid1"] = f"{DANONE_BID_1:.0f}"
+    M["bid2"] = f"{DANONE_BID_2:.0f}"
+    M["two_bloc"] = f"{qr['control']:.1f}"
+    M["family_pct"] = f"{FAMILY_PCT:.1f}"
+    M["danone_pct"] = f"{DANONE_PCT:.0f}"
+    M["meeting_date"] = ANNUAL_MEETING_DATE
+    M["pill_date"] = PILL_EXPIRY_DATE
+    M["withdraw_date"] = DANONE_WITHDRAW_DATE
+    M["streak"] = str(CONSEC_QUARTERS)
+    dm = dd(ANNUAL_MEETING_DATE); M["days_to_meeting"] = str(dm) if dm is not None else None
+    dp = dd(PILL_EXPIRY_DATE); M["days_to_pill"] = str(dp) if dp is not None else None
+
+    # — financial —
+    qrev_latest = _last_non_null(fin["qrev"]["actual"])
+    M["qrev_latest"] = f"{qrev_latest:.0f}" if qrev_latest is not None else None
+    gm_latest = _last_non_null(fin["gm"]["actual"])
+    M["gm_latest"] = f"{gm_latest:.1f}" if gm_latest is not None else None
+    band = fin.get("gm_band")
+    M["gm_band_low"] = f"{band['low']:.1f}" if band else None
+    M["gm_band_high"] = f"{band['high']:.1f}" if band else None
+    M["gm_flag"] = "26"  # analyst margin floor (seed threshold)
+    lway_c = _last_non_null(fin["cat"]["lway"]); cat_c = _last_non_null(fin["cat"]["category"])
+    M["cat_latest"] = f"{cat_c:.0f}" if cat_c is not None else None
+    M["cat_gap"] = f"{lway_c - cat_c:.0f}" if (lway_c is not None and cat_c is not None) else None
+
+    # — milk (Class III) —
+    mlatest = mmonth = myoy = None
+    c3 = D["classiii"]
+    if not c3.empty and {"month", "class_iii_price"}.issubset(c3.columns):
+        c = c3.dropna(subset=["class_iii_price"]).sort_values("month")
+        if not c.empty:
+            mlatest = float(c.iloc[-1]["class_iii_price"]); mmonth = str(c.iloc[-1]["month"])
+            if len(c) >= 13:
+                prev = float(c.iloc[-13]["class_iii_price"])
+                if prev:
+                    myoy = (mlatest - prev) / prev * 100
+    M["milk_latest"] = f"{mlatest:.2f}" if mlatest is not None else None
+    M["milk_month"] = mmonth
+    M["milk_yoy"] = f"{myoy:+.0f}" if myoy is not None else None
+    M["milk_flag"] = f"{mlatest + 2:.0f}" if mlatest is not None else None  # +$2/cwt headwind (seed)
+
+    # — brand share of voice —
+    sov = brand["sov"]["series"]
+    if sov:
+        totals = {b: sum(v) for b, v in sov.items()}
+        grand = sum(totals.values()) or 1
+        lway_pct = totals.get("Lifeway", 0) / grand * 100
+        M["lway_sov_pct"] = f"{lway_pct:.0f}"
+        M["sov_flag"] = f"{max(0.0, lway_pct - 8):.0f}"  # 8-pt buffer below current (seed)
+    else:
+        M["lway_sov_pct"] = None; M["sov_flag"] = None
+
+    # — demand ↔ price correlation —
+    z = demand.get("demand_z") or []; idx = demand.get("stock_idx") or []
+    pairs = [(a, b) for a, b in zip(z, idx) if a is not None and b is not None]
+    if len(pairs) >= 3:
+        r = pd.Series([p[0] for p in pairs]).corr(pd.Series([p[1] for p in pairs]))
+        M["demand_corr"] = f"{r:+.2f}" if pd.notna(r) else None
+    else:
+        M["demand_corr"] = None
+
+    # — news / events —
+    ev = D["events"]
+    M["events_total"] = str(len(ev)) if not ev.empty else None
+    M["news_total"] = str(len(D["news"])) if not D["news"].empty else "0"
+    if not ev.empty:
+        e = ev.assign(_d=pd.to_datetime(ev["date"], errors="coerce")).sort_values("_d")
+        last = e.iloc[-1]
+        M["last_event_date"] = str(last.get("date", "")) or None
+        rp = last.get("reaction_pct")
+        M["last_event_pct"] = f"{float(rp):+.0f}" if pd.notna(rp) else None
+    else:
+        M["last_event_date"] = None; M["last_event_pct"] = None
+
+    # — valuation scenarios —
+    val = D["valuation"]
+    def _scn(needle):
+        if val.empty or "label" not in val.columns:
+            return None
+        hit = val[val["label"].astype(str).str.contains(needle, case=False, na=False)]
+        return float(hit.iloc[0]["value"]) if not hit.empty else None
+    vb = _scn("base"); vr = _scn("re-bid")
+    M["val_base"] = f"{vb:.0f}" if vb is not None else None
+    M["val_rebid"] = f"{vr:.0f}" if vr is not None else None
+
+    # — regime cluster (seed) —
+    rc = D["regime_cluster"]
+    if not rc.empty and "kind" in rc.columns:
+        def _row(kind):
+            hit = rc[rc["kind"] == kind]
+            return hit.iloc[0] if not hit.empty else None
+        dn = _row("distribution"); zo = _row("insider_buy"); ci = _row("institution")
+        if dn is not None and pd.notna(dn.get("stated_price")):
+            M["danone_sec_price"] = f"{float(dn['stated_price']):.2f}"
+        if zo is not None and pd.notna(zo.get("shares")):
+            M["zolezzi_shares"] = f"{int(zo['shares']):,}"
+        if ci is not None and pd.notna(ci.get("stated_price")):
+            M["citadel_pct"] = f"{float(ci['stated_price']):.1f}"
+
+    return M
+
+
 # ── Render helpers ─────────────────────────────────────────────────────────
 def section_header(num, title, subtitle, anchor) -> str:
     return (f'<div class="section-header" id="{anchor}">'
@@ -511,31 +672,79 @@ def render_top_callout(D: dict) -> str:
             f'<div class="whats-new-body">{md.get("html", "")}</div></div>')
 
 
-def render_the_situation(D: dict) -> str:
+def render_the_situation(D: dict, M: dict) -> str:
+    # Each force shows a live status line (value + direction), not a paragraph.
     cols = [
-        ("Danone overhang", "OVERHANG", "neg",
-         f"Danone bid ${DANONE_BID_1:.0f} → ${DANONE_BID_2:.0f}, then <strong>withdrew {DANONE_WITHDRAW_DATE}</strong>. "
-         f"Keeps a ~{DANONE_PCT:.0f}% stake plus a cooperation agreement. The poison pill lapses {PILL_EXPIRY_DATE}, "
-         "reopening a creeping-control / re-bid window.",
-         f"~{DANONE_PCT:.0f}% stake retained"),
-        ("Family control fight", "CONTESTED", "mid",
+        ("Danone overhang", "OVERHANG", "neg", "down",
+         f"Danone bid ${DANONE_BID_1:.0f} → ${DANONE_BID_2:.0f}, then <strong>withdrew {DANONE_WITHDRAW_DATE}</strong>, "
+         f"keeping a ~{DANONE_PCT:.0f}% stake plus a cooperation agreement. The poison pill lapses {PILL_EXPIRY_DATE}.",
+         "pill lapses in {days_to_pill}d · {discount_bid2}% below ${bid2}"),
+        ("Family control fight", "CONTESTED", "mid", "flat",
          f"Edward &amp; Ludmila Smolyansky ({FAMILY_PCT:.1f}%) are running a dissident slate against CEO Julie Smolyansky "
          f"and the incumbent board. The <strong>{ANNUAL_MEETING_DATE} annual meeting</strong> is the decisive vote.",
-         f"{FAMILY_PCT:.1f}% dissident bloc"),
-        ("Category momentum", "ACCELERATING", "pos",
-         f"Q1 2026 net sales <strong>${Q1_2026_SALES:.0f}M (+{Q1_2026_SALES_YOY}%)</strong>, gross margin {Q1_2026_GM:.1f}% — "
-         f"the {CONSEC_QUARTERS}th straight YoY-growth quarter as kefir rides the gut-health wave.",
-         f"+{Q1_2026_SALES_YOY}% Q1 sales"),
+         "{days_to_meeting}d to the {family_pct}% vote"),
+        ("Category momentum", "ACCELERATING", "pos", "up",
+         f"Q1 2026 net sales <strong>${Q1_2026_SALES:.0f}M</strong>, gross margin {Q1_2026_GM:.1f}% — the {CONSEC_QUARTERS}th "
+         "straight YoY-growth quarter as kefir rides the gut-health wave.",
+         "+{qrev_latest}% Q1 sales · {streak}-qtr streak"),
     ]
+    arrows = {"up": "▲", "down": "▼", "flat": "■"}
     items = ""
-    for title, pill, cls, desc, metric in cols:
+    for title, pill, cls, dirn, desc, metric_tmpl in cols:
+        metric = fill_template(metric_tmpl, M, where=f"forces/{title}", kind="force")
         items += (f'<div class="damage-col"><div class="damage-pill {cls}">{pill}</div>'
                   f'<div class="damage-title">{title}</div>'
                   f'<div class="damage-desc">{desc}</div>'
-                  f'<div class="damage-metric">{metric}</div></div>')
+                  f'<div class="damage-metric"><span class="dir {dirn}">{arrows[dirn]}</span>{metric}</div></div>')
     return ('<div class="three-damages">'
             f'<div class="three-damages-eyebrow">The setup · three forces colliding into the {ANNUAL_MEETING_DATE} vote</div>'
             f'<div class="damages-grid">{items}</div></div>')
+
+
+def render_dashboard_questions(M: dict) -> str:
+    """Top-of-page framer — the three questions the dashboard exists to answer.
+    Each answer carries a live/dated number so the framer is anchored, not opinion."""
+    qs = [
+        ("1", "Is the kefir / cultured-dairy category real &amp; durable?",
+         "Kefir is compounding — Q1 sales <strong>+{qrev_latest}%</strong> on a {cat_gap}-pt gap over the ~{cat_latest}% category."),
+        ("2", "Who controls the company once the cooperation-agreement constraints lift?",
+         "<strong>{two_bloc}%</strong> sits in two strategic blocs; the pill lapses {pill_date} ({days_to_pill}d), reopening the control question."),
+        ("3", "What is it worth — standalone vs. in a deal?",
+         "<strong>{last_close}</strong> today against a ${val_base} stand-alone / ${val_rebid} re-bid frame."),
+    ]
+    rows = ""
+    for n, q, ans in qs:
+        filled = fill_template(ans, M, where=f"framer/q{n}", kind="framer")
+        rows += f'<div class="qre-q"><b>{n}</b><div><strong>{q}</strong> {filled}</div></div>'
+    return ('<div class="quick-read-explainer">'
+            '<div class="qre-eyebrow">What this dashboard answers</div>'
+            f'{rows}</div>')
+
+
+def render_callouts(section: str, M: dict, D: dict) -> str:
+    """Section-level callout pair (WHAT THIS MEANS FOR LWAY + WHAT TO WATCH),
+    driven entirely by data/callouts.csv with live metric substitution."""
+    cdf = D["callouts"]
+    if cdf.empty or "section" not in cdf.columns:
+        return ""
+    rows = cdf[cdf["section"] == section]
+    if rows.empty:
+        return ""
+    means = rows[rows["kind"] == "means"].sort_values("order")
+    watch = rows[rows["kind"] == "watch"].sort_values("order")
+    means_html = "".join(
+        f"<p>{fill_template(str(r['text']), M, where=f'{section}/means', kind='means')}</p>"
+        for _, r in means.iterrows())
+    watch_html = "".join(
+        f"<li>{fill_template(str(r['text']), M, where=f'{section}/watch', kind='watch')}</li>"
+        for _, r in watch.iterrows())
+    means_box = (f'<div class="callout callout-means"><div class="callout-eyebrow">'
+                 f'What this means for {TICKER}</div>{means_html}</div>') if means_html else ""
+    watch_box = (f'<div class="callout callout-watch"><div class="callout-eyebrow">'
+                 f'What to watch</div><ul>{watch_html}</ul></div>') if watch_html else ""
+    if not means_box and not watch_box:
+        return ""
+    return f'<div class="section-callouts">{means_box}{watch_box}</div>'
 
 
 def render_quick_read(D: dict, qr: dict) -> str:
@@ -797,12 +1006,19 @@ CSS = """
   --accent:#1f4e79; --accent2:#e8b54d; --accent3:#7fa8c9; --neg:#c0504d;
   --bg:#fbf8ef; --surface:#ffffff; --surface2:#f7f3e6; --border:#e4dccd;
   --text:#2b2f25; --muted:#7a7c70; --pos:#1f4e79;
+  --mono:'SF Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  font-size:15px;line-height:1.55}
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+/* numerics: tabular figures everywhere, SF Mono for tables + inline metric code */
+.hero-val,.val-num,.damage-metric,.stat-card .hero-val,td.num,th.num,
+.timeline-date,.feed-date{font-variant-numeric:tabular-nums}
+code,.source-caption code,.callout-watch li b,td.num,.qre-q b{font-family:var(--mono)}
+.source-caption code{color:var(--accent);background:rgba(31,78,121,0.08);
+  padding:1px 5px;border-radius:3px;font-size:11px}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 .topbar{position:sticky;top:0;z-index:50;background:var(--accent);color:#fff;
@@ -828,19 +1044,53 @@ a:hover{text-decoration:underline}
   font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:8px}
 .whats-new-title{font-size:18px;font-weight:700;margin-bottom:6px}
 .whats-new-body p{margin:5px 0}
-.three-damages{margin:22px 0 8px}
+.three-damages{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:18px 20px;margin:20px 0 12px;box-shadow:0 1px 3px rgba(31,78,121,0.05)}
 .three-damages-eyebrow{font-size:11px;letter-spacing:1.4px;text-transform:uppercase;
-  color:var(--muted);font-weight:700;margin-bottom:10px}
+  color:var(--accent);font-weight:700;margin-bottom:13px}
 .damages-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.damage-col{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.damage-col{background:#fdfbf2;border:1px solid var(--border);border-radius:10px;padding:14px 16px}
 .damage-pill{display:inline-block;font-size:10.5px;letter-spacing:.8px;font-weight:800;
   padding:3px 9px;border-radius:20px;margin-bottom:8px;text-transform:uppercase}
 .damage-pill.neg{background:#fbe6e3;color:var(--neg)}
 .damage-pill.mid{background:#f6efd6;color:#9a7b1f}
 .damage-pill.pos{background:#e4eef7;color:var(--accent)}
-.damage-title{font-size:16px;font-weight:700;margin-bottom:6px}
-.damage-desc{font-size:13.5px;color:#43463c;line-height:1.5}
-.damage-metric{margin-top:10px;font-size:13px;font-weight:700;color:var(--accent)}
+.damage-title{font-size:15.5px;font-weight:700;margin-bottom:6px}
+.damage-desc{font-size:13px;color:#43463c;line-height:1.5}
+.damage-metric{margin-top:10px;padding-top:8px;border-top:1px dashed var(--border);
+  font-size:12.5px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:5px}
+.damage-metric .dir{font-size:12px;font-weight:800}
+.damage-metric .dir.up{color:#2a7d3a} .damage-metric .dir.down{color:var(--neg)} .damage-metric .dir.flat{color:var(--muted)}
+
+/* Section-level callout pair — WHAT THIS MEANS FOR LWAY + WHAT TO WATCH */
+.section-callouts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0 6px}
+.callout{border-radius:10px;padding:13px 16px}
+.callout-means{background:linear-gradient(180deg,#fdf9ec,#fcefd0);border:1px solid #f0d987;
+  border-left:4px solid var(--accent2)}
+.callout-watch{background:linear-gradient(180deg,#f4f8fb,#eaf1f7);border:1px solid #cdddea;
+  border-left:4px solid var(--accent)}
+.callout-eyebrow{font-size:10.5px;letter-spacing:1.3px;text-transform:uppercase;font-weight:800;margin-bottom:8px}
+.callout-means .callout-eyebrow{color:#8a6b10}
+.callout-watch .callout-eyebrow{color:var(--accent)}
+.callout p{margin:0;font-size:13px;line-height:1.62;color:#43463c}
+.callout strong{color:var(--text);font-weight:700}
+.callout-watch ul{margin:0;padding:0;list-style:none}
+.callout-watch li{font-size:12.5px;line-height:1.5;color:#43463c;padding:6px 0;border-bottom:1px dashed var(--border)}
+.callout-watch li:last-child{border-bottom:none}
+.callout-watch li b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
+.callout-flag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.4px;color:#b34738;
+  background:#f8e2dc;border-radius:4px;padding:1px 5px;margin-left:6px;text-transform:uppercase}
+
+/* "What this dashboard answers" framer */
+.quick-read-explainer{background:linear-gradient(180deg,#fffdf2,#fcefd0);border:1px solid #ecd47c;
+  border-radius:12px;padding:16px 22px;margin:16px 0 8px}
+.qre-eyebrow{font-size:10.5px;font-weight:800;color:#8a6b10;letter-spacing:1.5px;
+  margin-bottom:10px;text-transform:uppercase}
+.qre-q{display:flex;gap:11px;padding:8px 0;border-bottom:1px dashed var(--border);
+  font-size:13.5px;line-height:1.6;color:#43463c}
+.qre-q:last-child{border-bottom:none}
+.qre-q b{color:var(--accent);font-weight:800;white-space:nowrap}
+.qre-q strong{color:var(--text);font-weight:700}
 .section-header{display:flex;align-items:flex-start;gap:14px;margin:38px 0 14px;
   padding-top:14px;border-top:2px solid var(--border);scroll-margin-top:72px}
 .section-num{font-size:13px;font-weight:800;color:#fff;background:var(--accent);
@@ -929,7 +1179,7 @@ footer{max-width:1280px;margin:0 auto;padding:24px 20px 50px;color:var(--muted);
   border-top:1px solid var(--border)}
 @media(max-width:880px){
   .damages-grid,.hero-row,.val-cards-row{grid-template-columns:1fr 1fr}
-  .setup-grid{grid-template-columns:1fr}
+  .setup-grid,.section-callouts{grid-template-columns:1fr}
   .timeline-item{grid-template-columns:90px 1fr}
   .timeline-tier{display:none}
 }
@@ -969,7 +1219,7 @@ document.addEventListener('DOMContentLoaded', function(){
       ctx.fillRect(chartArea.left,Math.min(y1,y2),chartArea.right-chartArea.left,Math.abs(y2-y1)); ctx.restore(); });
   }};
   Chart.register(refLinePlugin, yBandPlugin);
-  Chart.defaults.font.family='-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif';
+  Chart.defaults.font.family="'Inter',-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif";
   Chart.defaults.font.size=11; Chart.defaults.color='#5a5c50';
   Chart.defaults.plugins.legend.labels.usePointStyle=true;
   Chart.defaults.plugins.legend.labels.boxWidth=8;
@@ -1155,6 +1405,9 @@ def build_html(body: str, blob: dict) -> str:
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{BRAND_NAME} ({TICKER}) — demand &amp; control dashboard</title>'
+        '<link rel="preconnect" href="https://fonts.googleapis.com">'
+        '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">'
         '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
         '<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/'
         'dist/chartjs-adapter-date-fns.bundle.min.js"></script>'
@@ -1164,33 +1417,64 @@ def build_html(body: str, blob: dict) -> str:
     )
 
 
+def _dump_ledger() -> None:
+    """Write the callout anchor audit (which metric each line is wired to, and
+    any line that could not be anchored) to reads/anchor_ledger.md + stderr."""
+    import sys
+    total = len(CALLOUT_LEDGER)
+    flagged = [c for c in CALLOUT_LEDGER if not c["anchored"]]
+    lines = ["# Callout anchor ledger",
+             "",
+             f"_Generated {GENERATED_AT:%Y-%m-%d %H:%M} · {total} interpretive lines · "
+             f"{total - len(flagged)} anchored · {len(flagged)} flagged_",
+             ""]
+    for c in CALLOUT_LEDGER:
+        status = "OK  " if c["anchored"] else "FLAG"
+        metrics = ", ".join(c["used"]) or "(no placeholders)"
+        miss = f"  ·  MISSING: {', '.join(c['missing'])}" if c["missing"] else ""
+        lines.append(f"- `{status}` **{c['where']}** ({c['kind']}) → {metrics}{miss}")
+    (READS / "anchor_ledger.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"  · callouts: {total} interpretive lines, {len(flagged)} flagged "
+          f"(audit → reads/anchor_ledger.md)", file=sys.stderr)
+    for c in flagged:
+        why = ", ".join(c["missing"]) if c["missing"] else "no placeholders (opinion-only)"
+        print(f"    ! UNANCHORED {c['where']} ({c['kind']}): {why}", file=sys.stderr)
+
+
 def main():
     D = load_all()
     qr = compute_quick_read(D)
     fin = compute_financial(D)
+    setup = compute_setup(D)
+    news = compute_stock_news(D)
+    milk = compute_milk(D)
+    brand = compute_brand(D)
+    demand = compute_demand_vs_stock(D)
+    M = compute_metrics(D, qr, fin, brand, milk, demand)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
         "topic_colors": TOPIC_COLORS, "topic_labels": TOPIC_LABELS,
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
-        "setup": compute_setup(D),
-        "news": compute_stock_news(D),
-        "milk": compute_milk(D),
-        "brand": compute_brand(D),
-        "fin": fin,
-        "demand": compute_demand_vs_stock(D),
+        "setup": setup, "news": news, "milk": milk, "brand": brand,
+        "fin": fin, "demand": demand,
     }
+
+    def sect(html: str, key: str) -> str:
+        return html + render_callouts(key, M, D)
+
     body = (
         '<div class="container">'
         + render_top_callout(D)
-        + render_the_situation(D)
-        + render_quick_read(D, qr)
-        + render_setup(D)
-        + render_news(D)
-        + render_milk(D)
-        + render_brand(D)
-        + render_financial(D, fin)
-        + render_demand(D)
+        + render_the_situation(D, M)
+        + render_dashboard_questions(M)
+        + sect(render_quick_read(D, qr), "quick-read")
+        + sect(render_setup(D), "setup")
+        + sect(render_news(D), "news")
+        + sect(render_milk(D), "milk")
+        + sect(render_brand(D), "brand")
+        + sect(render_financial(D, fin), "financial")
+        + sect(render_demand(D), "demand")
         + '</div>'
         + f'<footer>{refresh_footer()}</footer>'
         + render_summary_modal(D, qr, fin)
@@ -1198,6 +1482,7 @@ def main():
     html = build_html(body, blob)
     OUT_HTML.write_text(html, encoding="utf-8")
     print(f"✓ wrote {OUT_HTML}  ({len(html):,} bytes)")
+    _dump_ledger()
 
 
 if __name__ == "__main__":
