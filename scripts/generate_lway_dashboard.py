@@ -253,6 +253,8 @@ def load_all() -> dict:
         "penetration": safe_read(DATA / "household_penetration.csv"),
         "category_size": safe_read(DATA / "category_size.csv"),
         "wellness": safe_read(DATA / "wellness_narratives.csv"),
+        "competitors": safe_read(DATA / "competitor_landscape.csv"),
+        "peer_val": safe_read(DATA / "peer_valuations.csv"),
     }
 
 
@@ -509,6 +511,37 @@ def compute_wellness(D: dict) -> dict:
     return {"items": items, "tiers": tiers_present}
 
 
+def compute_competitors(D: dict) -> dict:
+    """S12 Competitive set — live peer valuations (yfinance) + landscape map."""
+    def num(v):
+        return None if (v is None or v == "" or pd.isna(v)) else float(v)
+
+    peers = []
+    pv = D["peer_val"]
+    as_of = None
+    if not pv.empty:
+        if "as_of" in pv.columns and len(pv):
+            as_of = str(pv.iloc[0]["as_of"])
+        for _, r in pv.iterrows():
+            peers.append({"ticker": str(r.get("ticker", "")), "company": str(r.get("company", "")),
+                          "ev_sales": num(r.get("ev_sales")), "ev_ebitda": num(r.get("ev_ebitda")),
+                          "pe": num(r.get("pe")), "is_self": str(r.get("ticker", "")) == TICKER})
+    peer_eb = sorted(p["ev_ebitda"] for p in peers if p["ev_ebitda"] is not None and not p["is_self"])
+    n = len(peer_eb)
+    median = (peer_eb[n // 2] if n % 2 else (peer_eb[n // 2 - 1] + peer_eb[n // 2]) / 2) if n else None
+    lway = next((p for p in peers if p["is_self"]), None)
+
+    groups = {}
+    land = D["competitors"]
+    if not land.empty:
+        for _, r in land.iterrows():
+            groups.setdefault(str(r.get("relation", "")), []).append({
+                "company": str(r.get("company", "")), "ticker": str(r.get("ticker", "") or ""),
+                "segment": str(r.get("segment", "")), "note": str(r.get("note", "") or "")})
+    return {"peers": peers, "peer_median_ev_ebitda": (round(median, 1) if median else None),
+            "lway": lway, "as_of": as_of, "groups": groups}
+
+
 def compute_stock_news(D: dict) -> dict:
     stock = D["stock"]
     s = pd.DataFrame()
@@ -724,7 +757,7 @@ def _last_non_null(vals: list):
     return None
 
 
-def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness) -> dict:
+def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp) -> dict:
     """Flatten every anchorable number into one {key: display_string} dict.
 
     Values are pre-formatted strings (or None when the underlying series is
@@ -789,6 +822,12 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wel
     core_n = len([i for i in wi if i["tier"] == "core" and not i["placeholder"]])
     M["wellness_core_n"] = str(core_n) if core_n else None
     M["wellness_tiers"] = str(len(wellness.get("tiers", []))) if wellness.get("tiers") else None
+
+    # — competitive —
+    if comp.get("lway") and comp["lway"].get("ev_ebitda") is not None:
+        M["lway_ev_ebitda"] = f"{comp['lway']['ev_ebitda']:.1f}"
+    if comp.get("peer_median_ev_ebitda") is not None:
+        M["peer_median_ev_ebitda"] = f"{comp['peer_median_ev_ebitda']:.1f}"
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -1360,6 +1399,35 @@ def render_liquidity(D: dict, M: dict, liq: dict) -> str:
     return head + cards + chart + table
 
 
+def render_competitors(D: dict, M: dict, comp: dict) -> str:
+    head = section_header("12", "Competitive set",
+                          "Where LWAY trades vs food peers, and the conversion / acquirer map", "competitive")
+    blocks = []
+    if any(p["ev_ebitda"] is not None for p in comp["peers"]):
+        blocks.append(chart_card("peerValuationChart", "Valuation vs peers · EV/EBITDA",
+                                 "LWAY (highlighted) vs nutrition / better-for-you food comps",
+                                 f"Source: yfinance (live) · as of {comp['as_of'] or '—'}", "EV / EBITDA (x)", "big"))
+    else:
+        blocks.append(placeholder("Peer valuations populate after <code>fetch_peer_valuations.py</code> runs."))
+    REL_LABEL = {"valuation_peer": "Valuation peers", "direct_competitor": "Direct kefir competitors",
+                 "conversion_target": "Yogurt / cultured-dairy conversion targets",
+                 "acquirer_holder": "Current strategic holder", "potential_acquirer": "Potential strategic acquirers"}
+    order = ["valuation_peer", "direct_competitor", "conversion_target", "acquirer_holder", "potential_acquirer"]
+    rows = ""
+    for rel in order:
+        items = comp["groups"].get(rel, [])
+        if not items:
+            continue
+        rows += f'<tr><td colspan="3" class="muted-cell" style="font-weight:700;background:var(--surface2)">{REL_LABEL.get(rel, rel)}</td></tr>'
+        for it in items:
+            tk = f' <span class="muted-cell">({it["ticker"]})</span>' if it["ticker"] else ""
+            rows += (f'<tr><td><strong>{_esc(it["company"])}</strong>{tk}</td>'
+                     f'<td>{_esc(it["segment"])}</td><td class="cell-sub">{_esc(it["note"])}</td></tr>')
+    table = (f'<div class="table-card"><table><thead><tr><th>Company</th><th>Segment</th>'
+             f'<th>Relation / note</th></tr></thead><tbody>{rows}</tbody></table></div>') if rows else ""
+    return head + "".join(blocks) + table
+
+
 def render_demand(D: dict) -> str:
     head = section_header("—", "Social signal · low-confidence",
                           "Composite social demand (z-scored) vs the share price — kept as a low-confidence tile; "
@@ -1825,6 +1893,18 @@ document.addEventListener('DOMContentLoaded', function(){
       plugins:{legend:{position:'bottom'},tooltip:{callbacks:{label:c=>c.dataset.label+': '+(c.parsed.y==null?'— (pending)':c.parsed.y+'%')}}},
       scales:{x:{grid:{display:false}},y:{beginAtZero:true,suggestedMax:100,title:{display:true,text:'% of households'},grid:grid()}}}});
   })();
+
+  // 12 — peer valuation (EV/EBITDA bars, LWAY highlighted)
+  (function(){ const c=d.competitive; if(!c||!el('peerValuationChart')||!c.peers.length) return;
+    const ps=c.peers.filter(p=>p.ev_ebitda!=null).sort((a,b)=>a.ev_ebitda-b.ev_ebitda);
+    if(!ps.length) return;
+    new Chart(el('peerValuationChart'),{type:'bar',data:{labels:ps.map(p=>p.ticker),datasets:[
+      {label:'EV/EBITDA (x)',data:ps.map(p=>p.ev_ebitda),backgroundColor:ps.map(p=>p.is_self?A:A3),borderWidth:0}
+    ]},options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){const p=ps[ctx.dataIndex];
+        return [p.company+': '+p.ev_ebitda+'x EV/EBITDA',(p.ev_sales!=null?(p.ev_sales+'x EV/Sales'):'')];}}}},
+      scales:{x:{grid:{display:false}},y:{title:{display:true,text:'EV / EBITDA (x)'},grid:grid()}}}});
+  })();
 });
 """
 
@@ -1855,7 +1935,8 @@ def build_html(body: str, blob: dict) -> str:
            '<a class="nav-btn" href="#wellness">Wellness</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
-           '<a class="nav-btn" href="#liquidity">Liquidity</a>')
+           '<a class="nav-btn" href="#liquidity">Liquidity</a>'
+           '<a class="nav-btn" href="#competitive">Competitive</a>')
     topbar = ('<div class="topbar"><div class="topbar-inner">'
               f'<h1>{BRAND_NAME} <span>· {TICKER} demand &amp; control</span></h1>'
               f'<div class="topbar-nav">{nav}'
@@ -1916,7 +1997,8 @@ def main():
     liq = compute_liquidity(D, control)
     category = compute_category(D)
     wellness = compute_wellness(D)
-    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness)
+    comp = compute_competitors(D)
+    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
@@ -1924,7 +2006,7 @@ def main():
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
         "setup": setup, "control": control, "news": news, "milk": milk, "brand": brand,
         "fin": fin, "demand": demand, "liquidity": liq,
-        "category": category, "wellness": wellness,
+        "category": category, "wellness": wellness, "competitive": comp,
     }
 
     def sect(html: str, key: str) -> str:
@@ -1944,6 +2026,7 @@ def main():
         + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")
         + sect(render_liquidity(D, M, liq), "liquidity")
+        + sect(render_competitors(D, M, comp), "competitive")
         + sect(render_brand(D), "brand")
         + sect(render_demand(D), "demand")
         + '</div>'
