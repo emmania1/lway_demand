@@ -1219,7 +1219,8 @@ def render_news(D: dict) -> str:
 
 def render_milk(D: dict) -> str:
     head = section_header("09", "Milk &amp; margin engine",
-                          "Class III milk is the gross-margin swing factor for a dairy processor", "milk")
+                          "The milk-vs-retail spread is the gross-margin 'breaker' analog. Class III shown as input "
+                          "proxy — company benchmarks <strong>Class II</strong>; live Class II fetch pending.", "milk")
     if D["classiii"].empty:
         return head + placeholder("Milk price series unavailable.")
     c = D["classiii"].dropna(subset=["class_iii_price"]).sort_values("month")
@@ -1232,14 +1233,15 @@ def render_milk(D: dict) -> str:
             chg = (latest - prev) / prev * 100
     chg_cls = "neg" if (chg or 0) > 0 else "pos"
     cards = ('<div class="stat-row">'
-             f'<div class="stat-card"><div class="hero-label">Latest Class III</div>'
-             f'<div class="hero-val">${latest:.2f}</div><div class="hero-sub">{latest_m} · per cwt</div></div>'
+             f'<div class="stat-card"><div class="hero-label">Latest Class III (proxy)</div>'
+             f'<div class="hero-val">${latest:.2f}</div><div class="hero-sub">{latest_m} · per cwt · Class II pending</div></div>'
              f'<div class="stat-card"><div class="hero-label">12-mo change</div>'
              f'<div class="hero-val {chg_cls}">{fmt_pct(chg, plus=True)}</div>'
              f'<div class="hero-sub">lower milk = margin tailwind</div></div></div>')
-    chart = chart_card("milkChart", "Milk price backdrop",
-                       "USDA Class III ($/cwt, left axis) vs CPI retail whole milk ($/gal, right axis)",
-                       "Source: USDA AMS Class III (seed) · BLS CPI APU0000709112", "$ / cwt", "big",
+    chart = chart_card("milkChart", "Milk price backdrop — the margin spread",
+                       "USDA Class III ($/cwt, left) vs CPI retail whole milk ($/gal, right). Class II is the company "
+                       "benchmark; Class III shown as proxy until a live Class II fetch is wired.",
+                       "Source: USDA Class III (seed; Class II benchmark pending) · BLS CPI APU0000709112", "$ / cwt", "big",
                        take_md="milk_take.md")
     return head + cards + chart
 
