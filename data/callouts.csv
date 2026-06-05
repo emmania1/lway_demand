@@ -27,3 +27,5 @@ wellness,means,1,"Demand is led by <strong>{wellness_core_n}</strong> CORE drive
 wellness,watch,1,"Wellness drivers tracked: <b>{wellness_n}</b> — watch full-fat-dairy guidance (USDA/MAHA) and a sourced GLP-1 adoption series to fill."
 competitive,means,1,"LWAY trades at <strong>{lway_ev_ebitda}× EV/EBITDA</strong> vs a peer median of <strong>{peer_median_ev_ebitda}×</strong> — re-rating room if the category-growth + margin story is recognized; Chobani/Fage are conversion targets and prior bidder Danone frames the strategic-bid case."
 competitive,watch,1,"LWAY EV/EBITDA: <b>{lway_ev_ebitda}×</b> vs peer median {peer_median_ev_ebitda}× — flag the gap closing (re-rate) or widening (de-rate)."
+portfolio,means,1,"The franchise runs on its core kefir engine plus farmer cheese, with <strong>{port_bets}</strong> bets in flight (Muscle Mates protein, Kefir Butter) and the kids line the main laggard — the value-add mix is shifting toward higher-margin, on-trend lines."
+portfolio,watch,1,"Active bets / new categories: <b>{port_bets}</b> of {port_n} lines — watch Muscle Mates traction and Kefir Butter distribution as the proof points."

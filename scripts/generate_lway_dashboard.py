@@ -255,6 +255,7 @@ def load_all() -> dict:
         "wellness": safe_read(DATA / "wellness_narratives.csv"),
         "competitors": safe_read(DATA / "competitor_landscape.csv"),
         "peer_val": safe_read(DATA / "peer_valuations.csv"),
+        "portfolio": safe_read(CONFIG / "product_portfolio.csv"),
     }
 
 
@@ -511,6 +512,26 @@ def compute_wellness(D: dict) -> dict:
     return {"items": items, "tiers": tiers_present}
 
 
+def compute_portfolio(D: dict) -> dict:
+    """S05 Portfolio — value-add map; verdict (transcript-grounded) drives color."""
+    vorder = {"engine": 0, "working": 1, "bet": 2, "new_category": 3,
+              "struggling": 4, "underperformed": 4}
+    items = []
+    p = D["portfolio"]
+    if not p.empty:
+        for _, r in p.iterrows():
+            items.append({"name": str(r.get("display_name", "")), "line": str(r.get("line", "")),
+                          "launch": str(r.get("launch_year", "") or ""), "status": str(r.get("status", "")),
+                          "verdict": str(r.get("verdict", "")), "evidence": str(r.get("evidence", "") or "")})
+        items.sort(key=lambda x: vorder.get(x["verdict"], 9))
+    counts = {}
+    for it in items:
+        counts[it["verdict"]] = counts.get(it["verdict"], 0) + 1
+    bets = counts.get("bet", 0) + counts.get("new_category", 0)
+    return {"items": items, "counts": counts, "n": len(items), "bets": bets,
+            "engine": counts.get("engine", 0) + counts.get("working", 0)}
+
+
 def compute_competitors(D: dict) -> dict:
     """S12 Competitive set — live peer valuations (yfinance) + landscape map."""
     def num(v):
@@ -757,7 +778,7 @@ def _last_non_null(vals: list):
     return None
 
 
-def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp) -> dict:
+def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp, port) -> dict:
     """Flatten every anchorable number into one {key: display_string} dict.
 
     Values are pre-formatted strings (or None when the underlying series is
@@ -828,6 +849,12 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wel
         M["lway_ev_ebitda"] = f"{comp['lway']['ev_ebitda']:.1f}"
     if comp.get("peer_median_ev_ebitda") is not None:
         M["peer_median_ev_ebitda"] = f"{comp['peer_median_ev_ebitda']:.1f}"
+
+    # — portfolio —
+    if port.get("bets"):
+        M["port_bets"] = str(port["bets"])
+    if port.get("n"):
+        M["port_n"] = str(port["n"])
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -1399,6 +1426,27 @@ def render_liquidity(D: dict, M: dict, liq: dict) -> str:
     return head + cards + chart + table
 
 
+def render_portfolio(D: dict, M: dict, port: dict) -> str:
+    head = section_header("05", "Portfolio — what's working",
+                          "The value-add map: which lines are the engine, the bets, and the laggards", "portfolio")
+    if not port["items"]:
+        return head + placeholder("Portfolio map needs <code>config/product_portfolio.csv</code>.")
+    VCOLOR = {"engine": ("ENGINE", "pos"), "working": ("WORKING", "pos"), "bet": ("BET", "mid"),
+              "new_category": ("NEW CATEGORY", "purple"), "struggling": ("STRUGGLING", "neg"),
+              "underperformed": ("UNDERPERFORMED", "neg")}
+    cards = ""
+    for it in port["items"]:
+        vlabel, vcls = VCOLOR.get(it["verdict"], (it["verdict"].upper(), "na"))
+        ln = f' · {it["launch"]}' if it["launch"] else ""
+        cards += (f'<div class="port-card port-{vcls}"><div class="port-head">'
+                  f'<div class="port-name">{_esc(it["name"])}</div>'
+                  f'<span class="verdict-pill v-{vcls}">{vlabel}</span></div>'
+                  f'<div class="port-line">{_esc(it["line"])}{ln}</div>'
+                  f'<div class="port-evidence">{_esc(it["evidence"])}</div></div>')
+    return (head + f'<div class="portfolio-grid">{cards}</div>'
+            + '<div class="source-caption">Verdicts are transcript-grounded (seed); launch years approximate.</div>')
+
+
 def render_competitors(D: dict, M: dict, comp: dict) -> str:
     head = section_header("12", "Competitive set",
                           "Where LWAY trades vs food peers, and the conversion / acquirer map", "competitive")
@@ -1577,6 +1625,17 @@ a:hover{text-decoration:underline}
 .coalition-bar{position:relative;height:10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin:9px 0 7px}
 .coalition-fill{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:6px 0 0 6px;opacity:.85}
 .coalition-mark{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--neg)}
+.portfolio-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:8px 0}
+.port-card{background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--muted);border-radius:10px;padding:13px 15px}
+.port-card.port-pos{border-left-color:var(--accent)} .port-card.port-mid{border-left-color:var(--accent2)}
+.port-card.port-neg{border-left-color:var(--neg)} .port-card.port-purple{border-left-color:#8e6db4}
+.port-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
+.port-name{font-size:14.5px;font-weight:700}
+.port-line{font-size:12px;color:var(--muted);margin-bottom:6px}
+.port-evidence{font-size:12.5px;color:#43463c;line-height:1.45}
+.verdict-pill{font-size:9.5px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:20px;white-space:nowrap}
+.v-pos{background:#e4eef7;color:var(--accent)} .v-mid{background:#f6efd6;color:#9a7b1f}
+.v-neg{background:#fbe6e3;color:var(--neg)} .v-purple{background:#efe9f6;color:#6f4fa0} .v-na{background:var(--surface2);color:var(--muted)}
 .stat-row{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:4px 0 12px;max-width:640px}
 .timeline-strip{background:var(--surface);border:1px solid var(--border);border-radius:12px;
   padding:14px 18px;margin:14px 0}
@@ -1652,13 +1711,13 @@ td.num,th.num{text-align:right}
 footer{max-width:1280px;margin:0 auto;padding:24px 20px 50px;color:var(--muted);font-size:12px;
   border-top:1px solid var(--border)}
 @media(max-width:880px){
-  .damages-grid,.hero-row,.val-cards-row{grid-template-columns:1fr 1fr}
+  .damages-grid,.hero-row,.val-cards-row,.portfolio-grid{grid-template-columns:1fr 1fr}
   .setup-grid,.section-callouts{grid-template-columns:1fr}
   .timeline-item{grid-template-columns:90px 1fr}
   .timeline-tier{display:none}
 }
 @media(max-width:560px){
-  .damages-grid,.hero-row,.val-cards-row,.stat-row{grid-template-columns:1fr}
+  .damages-grid,.hero-row,.val-cards-row,.stat-row,.portfolio-grid{grid-template-columns:1fr}
 }
 """
 
@@ -1932,6 +1991,7 @@ def build_html(body: str, blob: dict) -> str:
            '<a class="nav-btn" href="#control">Control</a>'
            '<a class="nav-btn" href="#news">Stock &amp; news</a>'
            '<a class="nav-btn" href="#category">Category</a>'
+           '<a class="nav-btn" href="#portfolio">Portfolio</a>'
            '<a class="nav-btn" href="#wellness">Wellness</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
@@ -1998,7 +2058,8 @@ def main():
     category = compute_category(D)
     wellness = compute_wellness(D)
     comp = compute_competitors(D)
-    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp)
+    port = compute_portfolio(D)
+    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp, port)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
@@ -2006,7 +2067,7 @@ def main():
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
         "setup": setup, "control": control, "news": news, "milk": milk, "brand": brand,
         "fin": fin, "demand": demand, "liquidity": liq,
-        "category": category, "wellness": wellness, "competitive": comp,
+        "category": category, "wellness": wellness, "competitive": comp, "portfolio": port,
     }
 
     def sect(html: str, key: str) -> str:
@@ -2022,6 +2083,7 @@ def main():
         + sect(render_control(D, M, control), "control")
         + sect(render_news(D), "news")
         + sect(render_category(D, M, category), "category")
+        + sect(render_portfolio(D, M, port), "portfolio")
         + sect(render_wellness(D, M, wellness), "wellness")
         + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")

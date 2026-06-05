@@ -1,0 +1,9 @@
+key,display_name,line,launch_year,status,verdict,evidence
+plain_kefir,Plain kefir,Core kefir,1986,core,engine,"The franchise engine — largest, highest-margin line; the 'palette-training' base"
+flavored_kefir,Lowfat & flavored kefir,Core kefir,1990,core,working,"Bulk of volume; flavor breadth drives household repeat"
+whole_milk_kefir,Whole-milk kefir,Core kefir,2018,core,working,"Rides the full-fat-dairy validation narrative"
+farmer_cheese,Farmer cheese / soft cheese,Cheese,1986,core,working,"Second product pillar (soft cheese)"
+probugs,ProBugs (kids),Kids,2008,legacy,struggling,"Kids line — underperformed vs the adult franchise (transcript)"
+muscle_mates,Lifeway Muscle Mates,Protein,2026,launch,bet,"High-protein launch — productizing the protein wave; early read"
+kefir_butter,Kefir Butter,Adjacency,2025,launch,new_category,"Cultured-butter category extension — new white space"
+oat_kefir,Plant-based / oat kefir,Plant-based,2021,active,bet,"Dairy-free reach; smaller but optionality"

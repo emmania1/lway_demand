@@ -1,6 +1,6 @@
 # Callout anchor ledger
 
-_Generated 2026-06-05 15:11 · 34 interpretive lines · 34 anchored · 0 flagged_
+_Generated 2026-06-05 15:19 · 36 interpretive lines · 36 anchored · 0 flagged_
 
 - `OK  ` **forces/Danone overhang** (force) → days_to_pill, discount_bid2, bid2
 - `OK  ` **forces/Family control fight** (force) → days_to_meeting, family_pct
@@ -21,6 +21,8 @@ _Generated 2026-06-05 15:11 · 34 interpretive lines · 34 anchored · 0 flagged
 - `OK  ` **news/watch** (watch) → events_total
 - `OK  ` **category/means** (means) → pen_kefir, pen_yogurt, pen_headroom
 - `OK  ` **category/watch** (watch) → pen_kefir, pen_yogurt
+- `OK  ` **portfolio/means** (means) → port_bets
+- `OK  ` **portfolio/watch** (watch) → port_bets, port_n
 - `OK  ` **wellness/means** (means) → wellness_core_n, wellness_n, wellness_tiers
 - `OK  ` **wellness/watch** (watch) → wellness_n
 - `OK  ` **milk/means** (means) → milk_latest, milk_month, milk_yoy, gm_latest
