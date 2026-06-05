@@ -1,6 +1,6 @@
 # Callout anchor ledger
 
-_Generated 2026-06-05 13:14 · 28 interpretive lines · 28 anchored · 0 flagged_
+_Generated 2026-06-05 14:20 · 32 interpretive lines · 32 anchored · 0 flagged_
 
 - `OK  ` **forces/Danone overhang** (force) → days_to_pill, discount_bid2, bid2
 - `OK  ` **forces/Family control fight** (force) → days_to_meeting, family_pct
@@ -19,8 +19,10 @@ _Generated 2026-06-05 13:14 · 28 interpretive lines · 28 anchored · 0 flagged
 - `OK  ` **control/watch** (watch) → coalition_pct, supermajority
 - `OK  ` **news/means** (means) → events_total, last_event_date, last_event_pct, news_total
 - `OK  ` **news/watch** (watch) → events_total
-- `OK  ` **brand/means** (means) → lway_sov_pct, qrev_latest
-- `OK  ` **brand/watch** (watch) → lway_sov_pct, sov_flag
+- `OK  ` **category/means** (means) → pen_kefir, pen_yogurt, pen_headroom
+- `OK  ` **category/watch** (watch) → pen_kefir, pen_yogurt
+- `OK  ` **wellness/means** (means) → wellness_core_n, wellness_n, wellness_tiers
+- `OK  ` **wellness/watch** (watch) → wellness_n
 - `OK  ` **milk/means** (means) → milk_latest, milk_month, milk_yoy, gm_latest
 - `OK  ` **milk/watch** (watch) → milk_latest, milk_yoy, milk_flag
 - `OK  ` **financial/means** (means) → qrev_latest, cat_gap, cat_latest, gm_latest, gm_band_low, gm_band_high
@@ -28,5 +30,7 @@ _Generated 2026-06-05 13:14 · 28 interpretive lines · 28 anchored · 0 flagged
 - `OK  ` **financial/watch** (watch) → cat_gap
 - `OK  ` **liquidity/means** (means) → adtv_usd, float_pct, build_25m_days
 - `OK  ` **liquidity/watch** (watch) → adtv_usd
+- `OK  ` **brand/means** (means) → lway_sov_pct, qrev_latest
+- `OK  ` **brand/watch** (watch) → lway_sov_pct, sov_flag
 - `OK  ` **demand/means** (means) → demand_corr
 - `OK  ` **demand/watch** (watch) → demand_corr

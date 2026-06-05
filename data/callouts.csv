@@ -21,3 +21,7 @@ control,watch,1,"Standstill expiry: <b>{days_to_standstill}d</b> — flag any Da
 control,watch,2,"Coalition vs ⅔: <b>{coalition_pct}%</b> vs {supermajority}% — a deal still needs the float; watch institutional accumulation (Citadel 5.4%)."
 liquidity,means,1,"About <strong>{adtv_usd}</strong> of stock changes hands a day and the float ex-insiders/ex-Danone is <strong>{float_pct}%</strong> — at 20% of ADTV a $25M position is ~{build_25m_days} days to build (illustrative, not a position)."
 liquidity,watch,1,"30-day ADTV: <b>{adtv_usd}</b> — a thinner tape widens market impact; flag a sustained decline."
+category,means,1,"Kefir reaches just <strong>{pen_kefir}%</strong> of US households vs yogurt's <strong>{pen_yogurt}%</strong> — a <strong>{pen_headroom}×</strong> penetration runway as gut-health goes mainstream."
+category,watch,1,"Kefir household penetration: <b>{pen_kefir}%</b> — flag the next Circana/Numerator read; convergence toward yogurt's {pen_yogurt}% is the structural runway."
+wellness,means,1,"Demand is led by <strong>{wellness_core_n}</strong> CORE drivers — gut health (kefir's live-culture moat) and the high-protein wave LWAY is productizing (Muscle Mates) — with GLP-1 an accelerant; <strong>{wellness_n}</strong> narratives tracked across {wellness_tiers} tiers."
+wellness,watch,1,"Wellness drivers tracked: <b>{wellness_n}</b> — watch full-fat-dairy guidance (USDA/MAHA) and a sourced GLP-1 adoption series to fill."

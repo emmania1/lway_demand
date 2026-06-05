@@ -250,6 +250,9 @@ def load_all() -> dict:
         "regime_cluster": safe_read(DATA / "regime_cluster.csv"),
         "ownership_timeline": safe_read(DATA / "ownership_timeline.csv"),
         "control_timeline": safe_read(DATA / "control_timeline.csv"),
+        "penetration": safe_read(DATA / "household_penetration.csv"),
+        "category_size": safe_read(DATA / "category_size.csv"),
+        "wellness": safe_read(DATA / "wellness_narratives.csv"),
     }
 
 
@@ -454,6 +457,56 @@ def compute_liquidity(D: dict, control: dict) -> dict:
     flv = [v for v in control.get("ownership", {}).get("float", []) if v is not None]
     out["float_pct"] = flv[-1] if flv else None
     return out
+
+
+def _is_placeholder(note) -> bool:
+    """Format rule: a cell is a placeholder when its note flags PLACEHOLDER —
+    render '—'/'data pending', never 0, never an invented value."""
+    return isinstance(note, str) and "PLACEHOLDER" in note.upper()
+
+
+def compute_category(D: dict) -> dict:
+    """S04 Category & runway — kefir vs yogurt household penetration + TAM tiles."""
+    pen = {"years": [], "kefir": [], "yogurt": [], "latest_kefir": None, "latest_yogurt": None}
+    p = D["penetration"]
+    if not p.empty and "year" in p.columns:
+        pp = p.sort_values("year")
+        pen["years"] = [str(int(y)) for y in pp["year"]]
+        pen["kefir"] = [None if pd.isna(v) else float(v) for v in pp["kefir_pct"]] if "kefir_pct" in pp.columns else []
+        pen["yogurt"] = [None if pd.isna(v) else float(v) for v in pp["yogurt_pct"]] if "yogurt_pct" in pp.columns else []
+        kv = [v for v in pen["kefir"] if v is not None]; yv = [v for v in pen["yogurt"] if v is not None]
+        pen["latest_kefir"] = kv[-1] if kv else None
+        pen["latest_yogurt"] = yv[-1] if yv else None
+    headroom = (pen["latest_yogurt"] / pen["latest_kefir"]
+                if (pen["latest_kefir"] and pen["latest_yogurt"]) else None)
+    sizes = []
+    cs = D["category_size"]
+    if not cs.empty:
+        for _, r in cs.iterrows():
+            v = r.get("size_usd_bn"); g = r.get("growth_pct")
+            sizes.append({"category": str(r.get("category", "")),
+                          "size": (None if pd.isna(v) else float(v)),
+                          "growth": (None if pd.isna(g) else float(g)),
+                          "placeholder": _is_placeholder(r.get("note", ""))})
+    return {"pen": pen, "sizes": sizes, "headroom": headroom}
+
+
+def compute_wellness(D: dict) -> dict:
+    """S07 Wellness narratives — tiered demand drivers (core/accelerant/regulatory/secondary)."""
+    order = {"core": 0, "accelerant": 1, "regulatory": 2, "secondary": 3}
+    items = []
+    w = D["wellness"]
+    if not w.empty:
+        for _, r in w.iterrows():
+            date = str(r.get("date", "") or "").strip()
+            items.append({"date": date, "narrative": str(r.get("narrative", "")),
+                          "tier": str(r.get("tier", "")), "headline": str(r.get("headline", "")),
+                          "direction": str(r.get("direction", "") or ""),
+                          "strength": str(r.get("strength", "") or "").strip(),
+                          "placeholder": _is_placeholder(r.get("note", "")), "is_event": bool(date)})
+        items.sort(key=lambda x: (order.get(x["tier"], 9), x["date"] or "9999"))
+    tiers_present = sorted({i["tier"] for i in items}, key=lambda t: order.get(t, 9))
+    return {"items": items, "tiers": tiers_present}
 
 
 def compute_stock_news(D: dict) -> dict:
@@ -671,7 +724,7 @@ def _last_non_null(vals: list):
     return None
 
 
-def compute_metrics(D, qr, fin, brand, milk, demand, control, liq) -> dict:
+def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness) -> dict:
     """Flatten every anchorable number into one {key: display_string} dict.
 
     Values are pre-formatted strings (or None when the underlying series is
@@ -722,6 +775,20 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control, liq) -> dict:
     b25 = next((b for b in liq.get("build", []) if b["size"] == 25_000_000), None)
     if b25:
         M["build_25m_days"] = f"{b25['days']:.0f}"
+
+    # — category & wellness —
+    pen = category.get("pen", {})
+    if pen.get("latest_kefir") is not None:
+        M["pen_kefir"] = f"{pen['latest_kefir']:.0f}"
+    if pen.get("latest_yogurt") is not None:
+        M["pen_yogurt"] = f"{pen['latest_yogurt']:.0f}"
+    if category.get("headroom"):
+        M["pen_headroom"] = f"{category['headroom']:.0f}"
+    wi = wellness.get("items", [])
+    M["wellness_n"] = str(len(wi)) if wi else None
+    core_n = len([i for i in wi if i["tier"] == "core" and not i["placeholder"]])
+    M["wellness_core_n"] = str(core_n) if core_n else None
+    M["wellness_tiers"] = str(len(wellness.get("tiers", []))) if wellness.get("tiers") else None
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -913,11 +980,15 @@ def render_quick_read(D: dict, qr: dict) -> str:
     elif qr["stale"]:
         close_sub += f' <span class="callout-flag">stale · {qr["stale_days"]}d old</span>'
     disc_cls = "neg" if qr["discount"] > 0 else "pos"
+    try:
+        d2s = (pd.to_datetime(STANDSTILL_DATE).date() - GENERATED_AT.date()).days
+    except Exception:
+        d2s = None
     tiles = [
         ("Last close", fmt_num(qr["last_close"], dollars=True, dp=2), close_sub, ""),
         (f"Discount to ${DANONE_BID_2:.0f} bid", fmt_pct(qr["discount"]), "vs withdrawn Danone offer", disc_cls),
-        ("Two-bloc control", f"{qr['control']:.1f}%", f"{qr['family']:.1f}% family + {qr['danone']:.1f}% Danone · est.", ""),
-        ("YoY-growth streak", f"{qr['streak']} qtrs", "consecutive quarters", "pos"),
+        ("Standstill clock", f"{d2s} days" if d2s is not None else "—", f"to {STANDSTILL_DATE} expiry", ""),
+        ("Coalition vs ⅔", f"{qr['control']:.1f}%", f"{qr['family']:.1f}% fam + {qr['danone']:.1f}% Danone · vs {SUPERMAJORITY_PCT:.0f}%", ""),
     ]
     htiles = ""
     for label, val, sub, cls in tiles:
@@ -931,7 +1002,7 @@ def render_quick_read(D: dict, qr: dict) -> str:
                   f'<div class="timeline-tier">{t["tier"]}</div></div>')
     timeline = (f'<div class="timeline-strip"><div class="timeline-eyebrow">Forward catalysts</div>'
                 f'<div class="timeline-rows">{strip}</div></div>') if strip else ""
-    return (section_header("S0", "Quick read",
+    return (section_header("00", "Quick read",
                            "Where the stock sits vs the takeover anchor — and what's next", "quick-read")
             + f'<div class="hero-row">{htiles}</div>' + timeline)
 
@@ -964,13 +1035,13 @@ def render_setup(D: dict) -> str:
             "red band = the two-day cluster.",
             "Source: Yahoo Finance daily close · seed cluster — Form 4 / SC 13G / 424B (verify)",
             "Price ($)", "big")
-    return (section_header("S1", "The setup",
+    return (section_header("01", "The setup",
                            "Control optionality stacked on a compounding category story", "setup")
             + body + chart + regime)
 
 
 def render_control(D: dict, M: dict, control: dict) -> str:
-    head = section_header("S2", "The control stack",
+    head = section_header("02", "The control stack",
                           "Who holds the register, the standstill/pill/AGM clock, and the coalition math", "control")
     own = control["ownership"]
     if own["dates"]:
@@ -1030,7 +1101,7 @@ def render_control(D: dict, M: dict, control: dict) -> str:
 
 
 def render_news(D: dict) -> str:
-    head = section_header("S3", "Stock &amp; news",
+    head = section_header("03", "Stock &amp; news",
                           "The Danone saga in prices, plus what the press is covering now", "news")
     if not D["stock"].empty:
         ev_chart = chart_card("eventsChart", "Price &amp; event reactions",
@@ -1081,7 +1152,7 @@ def render_news(D: dict) -> str:
 
 
 def render_milk(D: dict) -> str:
-    head = section_header("S6", "Milk &amp; margin engine",
+    head = section_header("09", "Milk &amp; margin engine",
                           "Class III milk is the gross-margin swing factor for a dairy processor", "milk")
     if D["classiii"].empty:
         return head + placeholder("Milk price series unavailable.")
@@ -1108,8 +1179,8 @@ def render_milk(D: dict) -> str:
 
 
 def render_brand(D: dict) -> str:
-    head = section_header("S4", "Category &amp; consumer demand",
-                          "Share of voice vs cultured-dairy peers, and kefir-category enthusiasm", "brand")
+    head = section_header("—", "Social mentions · low-confidence",
+                          "Reddit / YouTube share-of-voice — a low-confidence tile; demand is distribution-driven, not social", "brand")
     blocks = []
     if not D["competitor_weekly"].empty:
         blocks.append(chart_card("brandSovChart", "Share of voice · cultured-dairy brands",
@@ -1159,7 +1230,7 @@ def render_brand(D: dict) -> str:
 
 
 def render_financial(D: dict, fin: dict) -> str:
-    head = section_header("S7", "Financials &amp; valuation",
+    head = section_header("10", "Financials &amp; valuation",
                           "Revenue growth, margin expansion, share-gain vs category, and the value bridge", "financial")
     qrev = chart_card("qrevChart", "Quarterly net-sales growth (YoY)",
                       "Bars colored by comp difficulty; faded bars = estimates",
@@ -1193,8 +1264,72 @@ def render_financial(D: dict, fin: dict) -> str:
     return head + qrev + gm + val_block + cat
 
 
+def render_category(D: dict, M: dict, cat: dict) -> str:
+    head = section_header("04", "Category &amp; runway",
+                          "Household penetration vs the mature yogurt comp — the structural runway for kefir", "category")
+    pen = cat["pen"]
+    if not pen["years"]:
+        return head + placeholder("Penetration chart needs <code>data/household_penetration.csv</code>.")
+    k, y, hr = pen["latest_kefir"], pen["latest_yogurt"], cat["headroom"]
+    tiles = (
+        '<div class="hero-row" style="grid-template-columns:repeat(3,1fr)">'
+        f'<div class="hero-tile"><div class="hero-label">Kefir household penetration</div>'
+        f'<div class="hero-val">{f"{k:.0f}" if k is not None else "—"}<span class="unit">%</span></div>'
+        f'<div class="hero-sub">share of US households</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Yogurt penetration (comp)</div>'
+        f'<div class="hero-val">{f"{y:.0f}" if y is not None else "—"}<span class="unit">%</span></div>'
+        f'<div class="hero-sub">the mature category it can converge toward</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Penetration headroom</div>'
+        f'<div class="hero-val">{f"{hr:.0f}" if hr else "—"}<span class="unit">×</span></div>'
+        f'<div class="hero-sub">yogurt ÷ kefir penetration</div></div>'
+        '</div>')
+    chart = chart_card("penetrationChart", "Household penetration — kefir vs yogurt",
+                       "% of US households buying the category (2024 anchor; later years pending scanner data)",
+                       "Source: LWAY IR / transcripts (2024 anchor) · Circana/Numerator pending (seed)",
+                       "% of households", "big", take_md="penetration_take.md")
+    stile = ""
+    for s in cat["sizes"]:
+        val = f"${s['size']:.0f}B" if s["size"] is not None else "—"
+        sub = (f"+{s['growth']:.0f}% growth" if s["growth"] is not None
+               else ("data pending" if s["placeholder"] else ""))
+        stile += (f'<div class="val-card"><div class="val-kind">category size</div>'
+                  f'<div class="hero-label">{_esc(s["category"])}</div>'
+                  f'<div class="val-num">{val}</div><div class="hero-sub">{sub}</div></div>')
+    sizes_block = f'<div class="val-cards-row">{stile}</div>' if stile else ""
+    return head + tiles + chart + sizes_block
+
+
+def render_wellness(D: dict, M: dict, well: dict) -> str:
+    head = section_header("07", "Wellness narratives",
+                          "The demand drivers behind kefir — tiered by importance (gut-health &amp; protein lead)", "wellness")
+    if not well["items"]:
+        return head + placeholder("Wellness narratives need <code>data/wellness_narratives.csv</code>.")
+    TIER = {"core": ("CORE", "pos"), "accelerant": ("ACCELERANT", "mid"),
+            "regulatory": ("REGULATORY", "pos"), "secondary": ("SECONDARY", "na")}
+    DIRC = {"bull": "pos", "bear": "neg", "context": "mid"}
+    cards = ""
+    for it in well["items"]:
+        tlabel, tcls = TIER.get(it["tier"], (it["tier"].upper(), "na"))
+        if it["placeholder"]:
+            cards += (f'<div class="feed-item"><div class="feed-row1">'
+                      f'<span class="badge badge-{tcls}">{tlabel}</span>'
+                      f'<span class="callout-flag">data pending</span></div>'
+                      f'<div class="feed-excerpt muted-cell">{_esc(it["headline"])}</div></div>')
+        else:
+            dcls = DIRC.get(it["direction"], "mid")
+            date = f'<span class="feed-date">{it["date"]}</span>' if it["is_event"] else ""
+            strg = f' · strength {it["strength"]}' if it["strength"] else ""
+            cards += (f'<div class="feed-item"><div class="feed-row1">{date}'
+                      f'<span class="legend-dot {dcls}"></span>'
+                      f'<span class="badge badge-{tcls}">{tlabel}</span></div>'
+                      f'<div class="feed-excerpt"><strong>{_esc(it["headline"])}</strong>'
+                      f'<span class="muted-cell">{strg}</span></div></div>')
+    return (head + '<div class="article-log" style="padding:8px 16px">'
+            f'<div class="feed-list">{cards}</div></div>')
+
+
 def render_liquidity(D: dict, M: dict, liq: dict) -> str:
-    head = section_header("S8", "Liquidity &amp; tradability",
+    head = section_header("11", "Liquidity &amp; tradability",
                           "How much stock actually trades — public-market tradability only (no positions shown)", "liquidity")
     if not liq["dates"] or liq["latest_usd"] is None:
         return head + placeholder("ADTV needs <code>data/lway_stock.csv</code> with a volume column.")
@@ -1226,7 +1361,7 @@ def render_liquidity(D: dict, M: dict, liq: dict) -> str:
 
 
 def render_demand(D: dict) -> str:
-    head = section_header("S9", "Social signal · low-confidence",
+    head = section_header("—", "Social signal · low-confidence",
                           "Composite social demand (z-scored) vs the share price — kept as a low-confidence tile; "
                           "demand is distribution-driven, not social", "demand")
     if D["reddit_weekly"].empty or D["stock"].empty:
@@ -1680,6 +1815,16 @@ document.addEventListener('DOMContentLoaded', function(){
       scales:{x:{type:'time',time:{unit:'month'},grid:{display:false},ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:10}},
         y:{title:{display:true,text:'$ / day'},grid:grid(),ticks:{callback:v=>'$'+(v/1e6).toFixed(1)+'M'}}}}});
   })();
+
+  // 04 — household penetration (kefir vs yogurt)
+  (function(){ const c=d.category&&d.category.pen; if(!c||!el('penetrationChart')||!c.years.length) return;
+    new Chart(el('penetrationChart'),{type:'bar',data:{labels:c.years,datasets:[
+      {label:'Kefir',data:c.kefir,backgroundColor:A},
+      {label:'Yogurt',data:c.yogurt,backgroundColor:A3}
+    ]},options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'bottom'},tooltip:{callbacks:{label:c=>c.dataset.label+': '+(c.parsed.y==null?'— (pending)':c.parsed.y+'%')}}},
+      scales:{x:{grid:{display:false}},y:{beginAtZero:true,suggestedMax:100,title:{display:true,text:'% of households'},grid:grid()}}}});
+  })();
 });
 """
 
@@ -1706,11 +1851,11 @@ def build_html(body: str, blob: dict) -> str:
            '<a class="nav-btn" href="#setup">Setup</a>'
            '<a class="nav-btn" href="#control">Control</a>'
            '<a class="nav-btn" href="#news">Stock &amp; news</a>'
-           '<a class="nav-btn" href="#brand">Category</a>'
+           '<a class="nav-btn" href="#category">Category</a>'
+           '<a class="nav-btn" href="#wellness">Wellness</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
-           '<a class="nav-btn" href="#liquidity">Liquidity</a>'
-           '<a class="nav-btn" href="#demand">Signal</a>')
+           '<a class="nav-btn" href="#liquidity">Liquidity</a>')
     topbar = ('<div class="topbar"><div class="topbar-inner">'
               f'<h1>{BRAND_NAME} <span>· {TICKER} demand &amp; control</span></h1>'
               f'<div class="topbar-nav">{nav}'
@@ -1769,7 +1914,9 @@ def main():
     brand = compute_brand(D)
     demand = compute_demand_vs_stock(D)
     liq = compute_liquidity(D, control)
-    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq)
+    category = compute_category(D)
+    wellness = compute_wellness(D)
+    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
@@ -1777,6 +1924,7 @@ def main():
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
         "setup": setup, "control": control, "news": news, "milk": milk, "brand": brand,
         "fin": fin, "demand": demand, "liquidity": liq,
+        "category": category, "wellness": wellness,
     }
 
     def sect(html: str, key: str) -> str:
@@ -1791,10 +1939,12 @@ def main():
         + sect(render_setup(D), "setup")
         + sect(render_control(D, M, control), "control")
         + sect(render_news(D), "news")
-        + sect(render_brand(D), "brand")
+        + sect(render_category(D, M, category), "category")
+        + sect(render_wellness(D, M, wellness), "wellness")
         + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")
         + sect(render_liquidity(D, M, liq), "liquidity")
+        + sect(render_brand(D), "brand")
         + sect(render_demand(D), "demand")
         + '</div>'
         + f'<footer>{refresh_footer()}</footer>'
