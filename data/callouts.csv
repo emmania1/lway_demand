@@ -29,3 +29,6 @@ competitive,means,1,"LWAY trades at <strong>{lway_ev_ebitda}× EV/EBITDA</strong
 competitive,watch,1,"LWAY EV/EBITDA: <b>{lway_ev_ebitda}×</b> vs peer median {peer_median_ev_ebitda}× — flag the gap closing (re-rate) or widening (de-rate)."
 portfolio,means,1,"The franchise runs on its core kefir engine plus farmer cheese, with <strong>{port_bets}</strong> bets in flight (Muscle Mates protein, Kefir Butter) and the kids line the main laggard — the value-add mix is shifting toward higher-margin, on-trend lines."
 portfolio,watch,1,"Active bets / new categories: <b>{port_bets}</b> of {port_n} lines — watch Muscle Mates traction and Kefir Butter distribution as the proof points."
+distribution,means,1,"Distribution is the real demand mechanic: Walmart is going <strong>{walmart_before}→{walmart_after}</strong> SKUs per door, with <strong>{initiatives_n}</strong> launches / channel moves in flight (Muscle Mates, Kefir Butter, club twin-packs)."
+distribution,watch,1,"Walmart SKUs/door: <b>{walmart_before}→{walmart_after}</b> — watch SKU adds at Kroger/Target and club rotations as the volume drivers; full doors×SKU is scanner-data pending."
+financial,watch,3,"Q1'26 beat: <b>${q1_actual}M</b> vs ${q1_est}M est (+{beat_pct}%) — watch whether Street estimates catch up to the run-rate."

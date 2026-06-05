@@ -256,6 +256,10 @@ def load_all() -> dict:
         "competitors": safe_read(DATA / "competitor_landscape.csv"),
         "peer_val": safe_read(DATA / "peer_valuations.csv"),
         "portfolio": safe_read(CONFIG / "product_portfolio.csv"),
+        "initiatives": safe_read(DATA / "initiatives.csv"),
+        "doors_skus": safe_read(DATA / "doors_skus.csv"),
+        "estimate_actual": safe_read(DATA / "estimate_actual.csv"),
+        "customer_mix": safe_read(DATA / "customer_mix.csv"),
     }
 
 
@@ -530,6 +534,42 @@ def compute_portfolio(D: dict) -> dict:
     bets = counts.get("bet", 0) + counts.get("new_category", 0)
     return {"items": items, "counts": counts, "n": len(items), "bets": bets,
             "engine": counts.get("engine", 0) + counts.get("working", 0)}
+
+
+def compute_distribution(D: dict) -> dict:
+    """S08 Distribution & execution — initiatives feed + shelf-expansion mechanic."""
+    inits = []
+    di = D["initiatives"]
+    if not di.empty:
+        for _, r in di.iterrows():
+            inits.append({"name": str(r.get("name", "")), "line": str(r.get("line", "")),
+                          "channel": str(r.get("channel", "")), "launch": str(r.get("launch", "") or ""),
+                          "status": str(r.get("status", "")), "note": str(r.get("note", "") or "")})
+    skus, walmart = [], None
+    ds = D["doors_skus"]
+    if not ds.empty:
+        for _, r in ds.iterrows():
+            b, a = r.get("skus_before"), r.get("skus_after")
+            rec = {"retailer": str(r.get("retailer", "")),
+                   "before": (None if pd.isna(b) else int(b)), "after": (None if pd.isna(a) else int(a)),
+                   "placeholder": _is_placeholder(r.get("note", ""))}
+            skus.append(rec)
+            if rec["retailer"].lower() == "walmart" and rec["after"]:
+                walmart = rec
+    return {"initiatives": inits, "skus": skus, "walmart": walmart}
+
+
+def compute_customer(D: dict) -> dict:
+    """S06 Who's buying — customer mix (mostly placeholder until data is provided)."""
+    items = []
+    cm = D["customer_mix"]
+    if not cm.empty:
+        for _, r in cm.iterrows():
+            v = r.get("value")
+            items.append({"dimension": str(r.get("dimension", "")), "label": str(r.get("label", "")),
+                          "value": (None if pd.isna(v) else v), "disclosed": str(r.get("disclosed", "")),
+                          "placeholder": _is_placeholder(r.get("note", ""))})
+    return {"items": items}
 
 
 def compute_competitors(D: dict) -> dict:
@@ -855,6 +895,24 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wel
         M["port_bets"] = str(port["bets"])
     if port.get("n"):
         M["port_n"] = str(port["n"])
+
+    # — distribution & beat (read straight from D) —
+    di = D["initiatives"]
+    M["initiatives_n"] = str(len(di)) if not di.empty else None
+    ds = D["doors_skus"]
+    if not ds.empty and "retailer" in ds.columns:
+        w = ds[ds["retailer"].astype(str).str.lower() == "walmart"]
+        if not w.empty and pd.notna(w.iloc[0].get("skus_after")):
+            M["walmart_before"] = str(int(w.iloc[0]["skus_before"]))
+            M["walmart_after"] = str(int(w.iloc[0]["skus_after"]))
+    ea = D["estimate_actual"]
+    if not ea.empty:
+        try:
+            r = ea.iloc[-1]; est = float(r["estimate"]); act = float(r["actual"])
+            M["q1_actual"] = f"{act:.0f}"; M["q1_est"] = f"{est:.0f}"
+            M["beat_pct"] = f"{(act - est) / est * 100:.0f}"
+        except Exception:
+            pass
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -1300,6 +1358,23 @@ def render_brand(D: dict) -> str:
 def render_financial(D: dict, fin: dict) -> str:
     head = section_header("10", "Financials &amp; valuation",
                           "Revenue growth, margin expansion, share-gain vs category, and the value bridge", "financial")
+    beat = ""
+    ea = D["estimate_actual"]
+    if not ea.empty:
+        r = ea.iloc[-1]
+        try:
+            est = float(r["estimate"]); act = float(r["actual"]); pct = (act - est) / est * 100
+            beat = ('<div class="hero-row" style="grid-template-columns:repeat(3,1fr)">'
+                    f'<div class="hero-tile"><div class="hero-label">{r["quarter"]} net sales (actual)</div>'
+                    f'<div class="hero-val pos">${act:.0f}<span class="unit">M</span></div>'
+                    f'<div class="hero-sub">vs ${est:.0f}M Street estimate</div></div>'
+                    f'<div class="hero-tile"><div class="hero-label">Beat vs estimate</div>'
+                    f'<div class="hero-val pos">+{pct:.0f}<span class="unit">%</span></div>'
+                    f'<div class="hero-sub">sell-side underestimated the run-rate</div></div>'
+                    f'<div class="hero-tile"><div class="hero-label">Vol/price split · SG&amp;A · FCF</div>'
+                    f'<div class="hero-val">—</div><div class="hero-sub">data pending (disclosed splits)</div></div></div>')
+        except Exception:
+            beat = ""
     qrev = chart_card("qrevChart", "Quarterly net-sales growth (YoY)",
                       "Bars colored by comp difficulty; faded bars = estimates",
                       "Source: company prints (seed) · forward estimates", "YoY %", "big")
@@ -1329,7 +1404,7 @@ def render_financial(D: dict, fin: dict) -> str:
                       f'<div class="val-num {cls}">{disp}</div>'
                       f'<div class="hero-sub">{note}</div></div>')
     val_block = f'<div class="val-cards-row">{cards}</div>' if cards else ""
-    return head + qrev + gm + val_block + cat
+    return head + beat + qrev + gm + val_block + cat
 
 
 def render_category(D: dict, M: dict, cat: dict) -> str:
@@ -1447,6 +1522,52 @@ def render_portfolio(D: dict, M: dict, port: dict) -> str:
                   f'<div class="port-evidence">{_esc(it["evidence"])}</div></div>')
     return (head + f'<div class="portfolio-grid">{cards}</div>'
             + '<div class="source-caption">Verdicts are transcript-grounded (seed); launch years approximate.</div>')
+
+
+def render_customer(D: dict, M: dict, cust: dict) -> str:
+    head = section_header("06", "Who's buying",
+                          "Demographic shift, loyalty / basket, cohort retention — populates as customer-mix data lands", "whos-buying")
+    items = cust.get("items", [])
+    if not items:
+        return head + placeholder("Who's-buying populates with <code>data/customer_mix.csv</code> figures.")
+    rows = ""
+    for i in items:
+        flag = '<span class="callout-flag">data pending</span>' if i["placeholder"] else ""
+        val = "" if (i["value"] is None) else f' <strong>{_esc(str(i["value"]))}</strong>'
+        rows += (f'<div class="feed-item"><div class="feed-row1">'
+                 f'<span class="feed-meta"><strong>{_esc(i["label"])}</strong> · {_esc(i["dimension"])}</span>{flag}</div>'
+                 f'<div class="feed-excerpt muted-cell">{i["disclosed"] and ("disclosed: " + i["disclosed"]) or ""}{val}</div></div>')
+    return (head + '<div class="article-log" style="padding:8px 16px">'
+            f'<div class="feed-list">{rows}</div></div>')
+
+
+def render_distribution(D: dict, M: dict, dist: dict) -> str:
+    head = section_header("08", "Distribution &amp; execution",
+                          "The real demand mechanic — shelf expansion, club channel, and new-product initiatives", "distribution")
+    blocks = []
+    w = dist.get("walmart")
+    if w:
+        blocks.append(
+            '<div class="hero-row" style="grid-template-columns:repeat(3,1fr)">'
+            f'<div class="hero-tile"><div class="hero-label">Walmart SKUs / door</div>'
+            f'<div class="hero-val">{w["before"]}<span class="unit"> → </span>{w["after"]}</div>'
+            f'<div class="hero-sub">the shelf-expansion mechanic</div></div>'
+            f'<div class="hero-tile"><div class="hero-label">Initiatives tracked</div>'
+            f'<div class="hero-val">{len(dist["initiatives"])}</div><div class="hero-sub">launches &amp; channel moves</div></div>'
+            f'<div class="hero-tile"><div class="hero-label">Doors × SKUs/door (full)</div>'
+            f'<div class="hero-val">—</div><div class="hero-sub">scanner data pending</div></div></div>')
+    if dist["initiatives"]:
+        SC = {"launched": "pos", "active": "pos", "rolling out": "mid", "rotating": "mid"}
+        items = ""
+        for it in dist["initiatives"]:
+            dot = SC.get(it["status"].lower(), "mid")
+            items += (f'<div class="feed-item"><div class="feed-row1">'
+                      f'<span class="legend-dot {dot}"></span>'
+                      f'<span class="feed-meta"><strong>{_esc(it["name"])}</strong> · {_esc(it["channel"])} · {it["launch"]}</span>'
+                      f'<span class="badge badge-mid">{_esc(it["status"])}</span></div>'
+                      f'<div class="feed-excerpt">{_esc(it["note"])}</div></div>')
+        blocks.append(f'<div class="article-log" style="padding:8px 16px"><div class="feed-list">{items}</div></div>')
+    return head + "".join(blocks)
 
 
 def render_competitors(D: dict, M: dict, comp: dict) -> str:
@@ -1995,6 +2116,7 @@ def build_html(body: str, blob: dict) -> str:
            '<a class="nav-btn" href="#category">Category</a>'
            '<a class="nav-btn" href="#portfolio">Portfolio</a>'
            '<a class="nav-btn" href="#wellness">Wellness</a>'
+           '<a class="nav-btn" href="#distribution">Distribution</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
            '<a class="nav-btn" href="#liquidity">Liquidity</a>'
@@ -2061,6 +2183,8 @@ def main():
     wellness = compute_wellness(D)
     comp = compute_competitors(D)
     port = compute_portfolio(D)
+    dist = compute_distribution(D)
+    cust = compute_customer(D)
     M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wellness, comp, port)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
@@ -2086,7 +2210,9 @@ def main():
         + sect(render_news(D), "news")
         + sect(render_category(D, M, category), "category")
         + sect(render_portfolio(D, M, port), "portfolio")
+        + render_customer(D, M, cust)
         + sect(render_wellness(D, M, wellness), "wellness")
+        + sect(render_distribution(D, M, dist), "distribution")
         + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")
         + sect(render_liquidity(D, M, liq), "liquidity")

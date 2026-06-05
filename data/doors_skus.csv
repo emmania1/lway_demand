@@ -1,0 +1,5 @@
+retailer,skus_before,skus_after,source,note
+Walmart,2,5,"LWAY commentary (blueprint)","ANCHOR — the 2-to-5 SKUs-per-door shelf-expansion mechanic"
+Kroger,,,"scanner data","PLACEHOLDER"
+Target,,,"scanner data","PLACEHOLDER"
+Whole Foods,,,"scanner data","PLACEHOLDER"

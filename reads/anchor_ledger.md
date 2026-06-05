@@ -1,6 +1,6 @@
 # Callout anchor ledger
 
-_Generated 2026-06-05 15:22 · 36 interpretive lines · 36 anchored · 0 flagged_
+_Generated 2026-06-05 15:34 · 39 interpretive lines · 39 anchored · 0 flagged_
 
 - `OK  ` **forces/Danone overhang** (force) → days_to_pill, discount_bid2, bid2
 - `OK  ` **forces/Family control fight** (force) → days_to_meeting, family_pct
@@ -25,11 +25,14 @@ _Generated 2026-06-05 15:22 · 36 interpretive lines · 36 anchored · 0 flagged
 - `OK  ` **portfolio/watch** (watch) → port_bets, port_n
 - `OK  ` **wellness/means** (means) → wellness_core_n, wellness_n, wellness_tiers
 - `OK  ` **wellness/watch** (watch) → wellness_n
+- `OK  ` **distribution/means** (means) → walmart_before, walmart_after, initiatives_n
+- `OK  ` **distribution/watch** (watch) → walmart_before, walmart_after
 - `OK  ` **milk/means** (means) → milk_latest, milk_month, milk_yoy, gm_latest
 - `OK  ` **milk/watch** (watch) → milk_latest, milk_yoy, milk_flag
 - `OK  ` **financial/means** (means) → qrev_latest, cat_gap, cat_latest, gm_latest, gm_band_low, gm_band_high
 - `OK  ` **financial/watch** (watch) → gm_latest, gm_band_low, gm_band_high, gm_flag
 - `OK  ` **financial/watch** (watch) → cat_gap
+- `OK  ` **financial/watch** (watch) → q1_actual, q1_est, beat_pct
 - `OK  ` **liquidity/means** (means) → adtv_usd, float_pct, build_25m_days
 - `OK  ` **liquidity/watch** (watch) → adtv_usd
 - `OK  ` **competitive/means** (means) → lway_ev_ebitda, peer_median_ev_ebitda
