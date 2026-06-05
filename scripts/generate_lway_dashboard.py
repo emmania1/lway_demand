@@ -301,12 +301,22 @@ def compute_quick_read(D: dict) -> dict:
     }
 
 
+CLUSTER_MARKER_STYLE = {
+    "distribution": {"color": BRAND_NEG, "style": "rectRot", "lbl": "Distribution (sell)"},
+    "insider_buy": {"color": "#2a7d3a", "style": "triangle", "lbl": "Insider buy"},
+    "institution": {"color": BRAND_ACCENT, "style": "circle", "lbl": "New institution"},
+}
+
+
 def compute_setup(D: dict) -> dict:
     stock = D["stock"]
     dates, close = [], []
+    s = pd.DataFrame()
     if not stock.empty and {"date", "close"}.issubset(stock.columns):
-        s = stock.dropna(subset=["close"]).sort_values("date")
-        dates = [str(x) for x in s["date"]]
+        s = (stock.dropna(subset=["close"])
+             .assign(_d=lambda x: pd.to_datetime(x["date"], errors="coerce"))
+             .dropna(subset=["_d"]).sort_values("_d"))
+        dates = [d.strftime("%Y-%m-%d") for d in s["_d"]]
         close = _numlist(s["close"])
     refs = [
         {"date": DANONE_BID2_DATE, "label": "Danone $27 bid", "color": BRAND_ACCENT2},
@@ -314,8 +324,39 @@ def compute_setup(D: dict) -> dict:
         {"date": ANNUAL_MEETING_DATE, "label": "Annual meeting", "color": BRAND_ACCENT},
         {"date": PILL_EXPIRY_DATE, "label": "Pill expiry", "color": BRAND_PURPLE},
     ]
-    return {"dates": dates, "close": close,
-            "bid1": DANONE_BID_1, "bid2": DANONE_BID_2, "refs": refs}
+
+    # ── Regime-change cluster (May 14–15 2026): a 2-day event is invisible on a
+    # 3-year axis, so render a FOCUSED price window with the cluster markers
+    # placed on the price line (y = as-of close), driven by regime_cluster.csv.
+    cluster = {"dates": [], "close": [], "markers": [], "band": None,
+               "ref": None, "label": "", "styles": CLUSTER_MARKER_STYLE}
+    rc = D["regime_cluster"]
+    if not s.empty and not rc.empty and "kind" in rc.columns:
+        cdates = pd.to_datetime(rc["date"], errors="coerce").dropna()
+        if not cdates.empty:
+            lo = cdates.min() - pd.Timedelta(days=30)
+            hi = cdates.max() + pd.Timedelta(days=14)
+            win = s[(s["_d"] >= lo) & (s["_d"] <= hi)]
+            cluster["dates"] = [d.strftime("%Y-%m-%d") for d in win["_d"]]
+            cluster["close"] = _numlist(win["close"])
+            for _, r in rc.iterrows():
+                dd = pd.to_datetime(r.get("date"), errors="coerce")
+                if pd.isna(dd):
+                    continue
+                asof = s[s["_d"] <= dd]
+                y = round(float(asof.iloc[-1]["close"]), 4) if not asof.empty else None
+                cluster["markers"].append({
+                    "x": dd.strftime("%Y-%m-%d"), "y": y,
+                    "kind": str(r.get("kind", "")), "actor": str(r.get("actor", "")),
+                    "action": str(r.get("action", "")), "detail": str(r.get("detail", "")),
+                })
+            c0 = cdates.min().strftime("%Y-%m-%d"); c1 = cdates.max().strftime("%Y-%m-%d")
+            cluster["band"] = {"start": c0, "end": c1, "color": "rgba(192,80,77,0.10)"}
+            cluster["ref"] = {"date": c0, "label": "May 14–15 cluster", "color": BRAND_NEG}
+            cluster["label"] = "Danone distributing into insider + new-institution accumulation"
+
+    return {"dates": dates, "close": close, "bid1": DANONE_BID_1, "bid2": DANONE_BID_2,
+            "refs": refs, "cluster": cluster}
 
 
 def compute_stock_news(D: dict) -> dict:
@@ -792,8 +833,18 @@ def render_setup(D: dict) -> str:
                            "Price ($)", "big", take_md="setup_take.md")
     else:
         chart = placeholder("Share-price chart populates after the first <code>fetch_stock_price.py</code> run.")
+    regime = ""
+    if not D["stock"].empty and not D["regime_cluster"].empty:
+        regime = chart_card(
+            "regimeClusterChart", "Regime-change cluster · May 14–15 2026",
+            "Focused price window: Danone distributing (sell) into insider + new-institution accumulation. "
+            "Markers on the price line — ◆ Danone distribution · ▲ insider buy · ● new institution; "
+            "red band = the two-day cluster.",
+            "Source: Yahoo Finance daily close · seed cluster — Form 4 / SC 13G / 424B (verify)",
+            "Price ($)", "big")
     return (section_header("01", "The setup",
-                           "Control optionality stacked on a compounding category story", "setup") + body + chart)
+                           "Control optionality stacked on a compounding category story", "setup")
+            + body + chart + regime)
 
 
 def render_news(D: dict) -> str:
@@ -1237,6 +1288,27 @@ document.addEventListener('DOMContentLoaded', function(){
       plugins:{refLine:{refs:s.refs,bands:[]}},
       scales:{x:{type:'time',time:{unit:'month'},grid:{display:false},
         ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:10}},
+        y:{title:{display:true,text:'Price ($)'},grid:grid()}}}});
+  })();
+
+  // 01b — regime-change cluster (focused window; markers placed on the price line)
+  (function(){ const c=d.setup&&d.setup.cluster; if(!c||!el('regimeClusterChart')||!c.dates.length) return;
+    const st=c.styles||{}; const mk=c.markers.filter(m=>m.y!=null);
+    new Chart(el('regimeClusterChart'),{data:{datasets:[
+      {type:'line',label:'LWAY close',data:c.dates.map((dt,i)=>({x:dt,y:c.close[i]})),
+        borderColor:A,backgroundColor:'rgba(31,78,121,0.08)',borderWidth:2,fill:true,tension:.15,pointRadius:0,order:2},
+      {type:'scatter',label:'Corporate actions',data:mk.map(m=>({x:m.x,y:m.y,_m:m})),
+        pointBackgroundColor:mk.map(m=>(st[m.kind]||{}).color||'#888'),
+        pointStyle:mk.map(m=>(st[m.kind]||{}).style||'circle'),
+        pointBorderColor:'#fff',pointBorderWidth:1.5,pointRadius:10,pointHoverRadius:13,order:1}
+    ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'nearest',intersect:true},
+      plugins:{legend:{position:'bottom'},
+        refLine:{refs:c.ref?[c.ref]:[],bands:c.band?[c.band]:[]},
+        tooltip:{callbacks:{label:function(ctx){const m=ctx.raw&&ctx.raw._m;
+          if(m){return [m.actor+' — '+m.action, m.detail];}
+          return 'LWAY $'+(ctx.parsed.y!=null?ctx.parsed.y.toFixed(2):''); }}}},
+      scales:{x:{type:'time',time:{unit:'week'},grid:{display:false},
+        ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:8}},
         y:{title:{display:true,text:'Price ($)'},grid:grid()}}}});
   })();
 
