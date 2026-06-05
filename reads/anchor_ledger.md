@@ -1,6 +1,6 @@
 # Callout anchor ledger
 
-_Generated 2026-06-05 13:06 · 26 interpretive lines · 26 anchored · 0 flagged_
+_Generated 2026-06-05 13:14 · 28 interpretive lines · 28 anchored · 0 flagged_
 
 - `OK  ` **forces/Danone overhang** (force) → days_to_pill, discount_bid2, bid2
 - `OK  ` **forces/Family control fight** (force) → days_to_meeting, family_pct
@@ -26,5 +26,7 @@ _Generated 2026-06-05 13:06 · 26 interpretive lines · 26 anchored · 0 flagged
 - `OK  ` **financial/means** (means) → qrev_latest, cat_gap, cat_latest, gm_latest, gm_band_low, gm_band_high
 - `OK  ` **financial/watch** (watch) → gm_latest, gm_band_low, gm_band_high, gm_flag
 - `OK  ` **financial/watch** (watch) → cat_gap
+- `OK  ` **liquidity/means** (means) → adtv_usd, float_pct, build_25m_days
+- `OK  ` **liquidity/watch** (watch) → adtv_usd
 - `OK  ` **demand/means** (means) → demand_corr
 - `OK  ` **demand/watch** (watch) → demand_corr

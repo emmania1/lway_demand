@@ -19,3 +19,5 @@ demand,watch,1,"Demand–price correlation: <b>{demand_corr}</b> — flag a sign
 control,means,1,"Two strategic blocs hold <strong>{coalition_pct}%</strong> if aligned — still <strong>{coalition_gap} pts</strong> shy of the Illinois ⅔ ({supermajority}%) bar. Danone has trimmed toward ~{danone_now}% post-secondary, and the standstill lapses in {days_to_standstill} days."
 control,watch,1,"Standstill expiry: <b>{days_to_standstill}d</b> — flag any Danone 13D/A or open-market buys once it lapses."
 control,watch,2,"Coalition vs ⅔: <b>{coalition_pct}%</b> vs {supermajority}% — a deal still needs the float; watch institutional accumulation (Citadel 5.4%)."
+liquidity,means,1,"About <strong>{adtv_usd}</strong> of stock changes hands a day and the float ex-insiders/ex-Danone is <strong>{float_pct}%</strong> — at 20% of ADTV a $25M position is ~{build_25m_days} days to build (illustrative, not a position)."
+liquidity,watch,1,"30-day ADTV: <b>{adtv_usd}</b> — a thinner tape widens market impact; flag a sustained decline."

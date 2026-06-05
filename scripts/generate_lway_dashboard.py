@@ -429,6 +429,33 @@ def compute_control(D: dict) -> dict:
             "timeline": timeline, "insiders": insiders}
 
 
+def compute_liquidity(D: dict, control: dict) -> dict:
+    """S8 tradability — PUBLIC-market data ONLY (no fund AUM, per spec). 30-day
+    dollar ADTV trend, float %, and illustrative (non-position) build-time."""
+    out = {"dates": [], "adtv_usd": [], "latest_usd": None, "latest_sh": None,
+           "float_pct": None, "build": []}
+    stock = D["stock"]
+    if not stock.empty and {"date", "close", "volume"}.issubset(stock.columns):
+        s = (stock.dropna(subset=["close", "volume"])
+             .assign(_d=lambda x: pd.to_datetime(x["date"], errors="coerce"))
+             .dropna(subset=["_d"]).sort_values("_d"))
+        if not s.empty:
+            dollar = (s["close"] * s["volume"]).rolling(30, min_periods=5).mean()
+            shares = s["volume"].rolling(30, min_periods=5).mean()
+            out["dates"] = [d.strftime("%Y-%m-%d") for d in s["_d"]]
+            out["adtv_usd"] = [None if pd.isna(v) else round(float(v)) for v in dollar]
+            valid = dollar.dropna()
+            if not valid.empty:
+                out["latest_usd"] = round(float(valid.iloc[-1]))
+                sh = shares.dropna()
+                out["latest_sh"] = round(float(sh.iloc[-1])) if not sh.empty else None
+                for sz in (10_000_000, 25_000_000, 50_000_000):
+                    out["build"].append({"size": sz, "days": round(sz / (0.20 * out["latest_usd"]), 1)})
+    flv = [v for v in control.get("ownership", {}).get("float", []) if v is not None]
+    out["float_pct"] = flv[-1] if flv else None
+    return out
+
+
 def compute_stock_news(D: dict) -> dict:
     stock = D["stock"]
     s = pd.DataFrame()
@@ -644,7 +671,7 @@ def _last_non_null(vals: list):
     return None
 
 
-def compute_metrics(D, qr, fin, brand, milk, demand, control) -> dict:
+def compute_metrics(D, qr, fin, brand, milk, demand, control, liq) -> dict:
     """Flatten every anchorable number into one {key: display_string} dict.
 
     Values are pre-formatted strings (or None when the underlying series is
@@ -686,6 +713,15 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control) -> dict:
     dstand = dd(STANDSTILL_DATE); M["days_to_standstill"] = str(dstand) if dstand is not None else None
     M["street_pt"] = f"{STREET_PT:.0f}"
     M["aspiration"] = f"{ASPIRATION_PRICE:.0f}"
+
+    # — liquidity (public only) —
+    if liq.get("latest_usd"):
+        M["adtv_usd"] = f"${liq['latest_usd'] / 1e6:.1f}M"
+    if liq.get("float_pct") is not None:
+        M["float_pct"] = f"{liq['float_pct']:.1f}"
+    b25 = next((b for b in liq.get("build", []) if b["size"] == 25_000_000), None)
+    if b25:
+        M["build_25m_days"] = f"{b25['days']:.0f}"
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -1157,6 +1193,38 @@ def render_financial(D: dict, fin: dict) -> str:
     return head + qrev + gm + val_block + cat
 
 
+def render_liquidity(D: dict, M: dict, liq: dict) -> str:
+    head = section_header("S8", "Liquidity &amp; tradability",
+                          "How much stock actually trades — public-market tradability only (no positions shown)", "liquidity")
+    if not liq["dates"] or liq["latest_usd"] is None:
+        return head + placeholder("ADTV needs <code>data/lway_stock.csv</code> with a volume column.")
+    usd, sh = liq["latest_usd"], liq["latest_sh"]
+    fl = liq["float_pct"]
+    b25 = next((b for b in liq["build"] if b["size"] == 25_000_000), liq["build"][0])
+    cards = (
+        '<div class="hero-row" style="grid-template-columns:repeat(3,1fr)">'
+        f'<div class="hero-tile"><div class="hero-label">30-day ADTV ($)</div>'
+        f'<div class="hero-val">${usd/1e6:.1f}<span class="unit">M / day</span></div>'
+        f'<div class="hero-sub">~{fmt_num(sh)} shares/day</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Float ex-insiders / ex-Danone</div>'
+        f'<div class="hero-val">{fl:.1f}<span class="unit">%</span></div>'
+        f'<div class="hero-sub">of shares outstanding</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Illustrative build @20% ADTV</div>'
+        f'<div class="hero-val">{b25["days"]:.0f}<span class="unit"> days</span></div>'
+        f'<div class="hero-sub">for a $25M position · illustrative, not a position</div></div>'
+        '</div>')
+    chart = chart_card("adtvChart", "Average daily traded value (30-day)",
+                       "Dollar ADTV over time — the tradability backdrop",
+                       "Source: Yahoo Finance volume × close (computed)", "$ / day", "big")
+    rows = "".join(f'<tr><td>${b["size"]//1_000_000}M position</td>'
+                   f'<td class="num">{b["days"]:.1f} days</td></tr>' for b in liq["build"])
+    table = ('<div class="table-card"><table><thead><tr><th>Illustrative size</th>'
+             f'<th class="num">Days to build @20% of ADTV</th></tr></thead><tbody>{rows}</tbody></table></div>'
+             '<div class="source-caption">Illustrative round sizes only — not a position or AUM. '
+             'Days = size ÷ (20% × 30-day $ADTV).</div>')
+    return head + cards + chart + table
+
+
 def render_demand(D: dict) -> str:
     head = section_header("S9", "Social signal · low-confidence",
                           "Composite social demand (z-scored) vs the share price — kept as a low-confidence tile; "
@@ -1602,6 +1670,16 @@ document.addEventListener('DOMContentLoaded', function(){
         y:{position:'left',title:{display:true,text:'Demand (z)'},grid:grid()},
         y1:{position:'right',title:{display:true,text:'Price (indexed)'},grid:{display:false}}}}});
   })();
+
+  // S8 — ADTV (30-day dollar volume)
+  (function(){ const q=d.liquidity; if(!q||!el('adtvChart')||!q.dates.length) return;
+    new Chart(el('adtvChart'),{type:'line',data:{datasets:[
+      {label:'30-day ADTV ($)',data:q.dates.map((dt,i)=>({x:dt,y:q.adtv_usd[i]})),
+        borderColor:A,backgroundColor:'rgba(31,78,121,0.08)',borderWidth:2,fill:true,tension:.15,pointRadius:0,spanGaps:true}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{type:'time',time:{unit:'month'},grid:{display:false},ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:10}},
+        y:{title:{display:true,text:'$ / day'},grid:grid(),ticks:{callback:v=>'$'+(v/1e6).toFixed(1)+'M'}}}}});
+  })();
 });
 """
 
@@ -1631,6 +1709,7 @@ def build_html(body: str, blob: dict) -> str:
            '<a class="nav-btn" href="#brand">Category</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
+           '<a class="nav-btn" href="#liquidity">Liquidity</a>'
            '<a class="nav-btn" href="#demand">Signal</a>')
     topbar = ('<div class="topbar"><div class="topbar-inner">'
               f'<h1>{BRAND_NAME} <span>· {TICKER} demand &amp; control</span></h1>'
@@ -1689,14 +1768,15 @@ def main():
     milk = compute_milk(D)
     brand = compute_brand(D)
     demand = compute_demand_vs_stock(D)
-    M = compute_metrics(D, qr, fin, brand, milk, demand, control)
+    liq = compute_liquidity(D, control)
+    M = compute_metrics(D, qr, fin, brand, milk, demand, control, liq)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
         "topic_colors": TOPIC_COLORS, "topic_labels": TOPIC_LABELS,
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
         "setup": setup, "control": control, "news": news, "milk": milk, "brand": brand,
-        "fin": fin, "demand": demand,
+        "fin": fin, "demand": demand, "liquidity": liq,
     }
 
     def sect(html: str, key: str) -> str:
@@ -1714,6 +1794,7 @@ def main():
         + sect(render_brand(D), "brand")
         + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")
+        + sect(render_liquidity(D, M, liq), "liquidity")
         + sect(render_demand(D), "demand")
         + '</div>'
         + f'<footer>{refresh_footer()}</footer>'
