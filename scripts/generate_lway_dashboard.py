@@ -54,6 +54,10 @@ DANONE_BID2_DATE = "2024-11-15"
 DANONE_WITHDRAW_DATE = "2025-09-18"
 PILL_EXPIRY_DATE = "2026-10-29"
 ANNUAL_MEETING_DATE = "2026-06-17"
+STANDSTILL_DATE = "2026-06-30"       # cooperation-agreement standstill expiry (blueprint — verify)
+SUPERMAJORITY_PCT = 66.7             # Illinois 2/3 supermajority threshold (verify)
+STREET_PT = 35.0                     # sell-side price target (seed — verify)
+ASPIRATION_PRICE = 60.0             # bull/aspiration value (seed — verify)
 FAMILY_PCT = 26.17
 DANONE_PCT = 23.0
 CONSEC_QUARTERS = 26
@@ -244,6 +248,8 @@ def load_all() -> dict:
         "ownership": safe_read(DATA / "ownership.csv"),
         "callouts": safe_read(DATA / "callouts.csv"),
         "regime_cluster": safe_read(DATA / "regime_cluster.csv"),
+        "ownership_timeline": safe_read(DATA / "ownership_timeline.csv"),
+        "control_timeline": safe_read(DATA / "control_timeline.csv"),
     }
 
 
@@ -288,6 +294,16 @@ def compute_quick_read(D: dict) -> dict:
         stale_days = None
     stale = (source == "fallback") or (stale_days is not None and stale_days > PRICE_STALE_DAYS)
     discount = (DANONE_BID_2 - last_close) / DANONE_BID_2 * 100.0
+    # Current register from the ownership timeline (single source of truth so the
+    # two-bloc/coalition figures agree everywhere); fall back to filed constants.
+    fam_now, dan_now = FAMILY_PCT, DANONE_PCT
+    ot = D["ownership_timeline"]
+    if not ot.empty and {"family_pct", "danone_pct", "date"}.issubset(ot.columns):
+        try:
+            o = ot.sort_values("date")
+            fam_now = float(o.iloc[-1]["family_pct"]); dan_now = float(o.iloc[-1]["danone_pct"])
+        except Exception:
+            pass
     timeline = []
     cat = D["catalysts"]
     if not cat.empty:
@@ -307,8 +323,8 @@ def compute_quick_read(D: dict) -> dict:
         "stale": stale,
         "stale_days": stale_days,
         "discount": round(discount, 1),
-        "control": round(FAMILY_PCT + DANONE_PCT, 2),
-        "family": FAMILY_PCT, "danone": DANONE_PCT,
+        "control": round(fam_now + dan_now, 2),
+        "family": fam_now, "danone": dan_now,
         "streak": CONSEC_QUARTERS,
         "timeline": timeline,
     }
@@ -370,6 +386,47 @@ def compute_setup(D: dict) -> dict:
 
     return {"dates": dates, "close": close, "bid1": DANONE_BID_1, "bid2": DANONE_BID_2,
             "refs": refs, "cluster": cluster}
+
+
+def compute_control(D: dict) -> dict:
+    """S2 Control Stack: ownership-over-time, coalition math, control timeline,
+    insider/13D-G feed. Ownership splits are seed (some estimated — see CSV)."""
+    def col(o, name):
+        return _numlist(o[name]) if name in o.columns else []
+
+    ot = D["ownership_timeline"]
+    own = {"dates": [], "family": [], "danone": [], "mgmt": [], "float": []}
+    danone_then = danone_now = family_now = None
+    if not ot.empty and "date" in ot.columns:
+        o = ot.sort_values("date")
+        own = {"dates": [str(x) for x in o["date"]], "family": col(o, "family_pct"),
+               "danone": col(o, "danone_pct"), "mgmt": col(o, "mgmt_pct"), "float": col(o, "float_pct")}
+        dv = [v for v in own["danone"] if v is not None]
+        if dv:
+            danone_then, danone_now = dv[0], dv[-1]
+        fv = [v for v in own["family"] if v is not None]
+        if fv:
+            family_now = fv[-1]
+    fam = family_now if family_now is not None else FAMILY_PCT
+    dan = danone_now if danone_now is not None else DANONE_PCT
+    coalition = round((fam or 0) + (dan or 0), 1)
+
+    timeline = []
+    ct = D["control_timeline"]
+    if not ct.empty:
+        for _, r in ct.sort_values("date").iterrows():
+            timeline.append({"date": str(r.get("date", "")), "event": str(r.get("event", "")),
+                             "kind": str(r.get("kind", "")), "note": str(r.get("note", "") or "")})
+    insiders = []
+    rc = D["regime_cluster"]
+    if not rc.empty:
+        for _, r in rc.sort_values("date", ascending=False).iterrows():
+            insiders.append({"date": str(r.get("date", "")), "actor": str(r.get("actor", "")),
+                             "action": str(r.get("action", "")), "detail": str(r.get("detail", "") or ""),
+                             "kind": str(r.get("kind", ""))})
+    return {"ownership": own, "coalition": coalition, "supermajority": SUPERMAJORITY_PCT,
+            "danone_then": danone_then, "danone_now": danone_now, "family_now": fam,
+            "timeline": timeline, "insiders": insiders}
 
 
 def compute_stock_news(D: dict) -> dict:
@@ -587,7 +644,7 @@ def _last_non_null(vals: list):
     return None
 
 
-def compute_metrics(D, qr, fin, brand, milk, demand) -> dict:
+def compute_metrics(D, qr, fin, brand, milk, demand, control) -> dict:
     """Flatten every anchorable number into one {key: display_string} dict.
 
     Values are pre-formatted strings (or None when the underlying series is
@@ -617,6 +674,18 @@ def compute_metrics(D, qr, fin, brand, milk, demand) -> dict:
     M["streak"] = str(CONSEC_QUARTERS)
     dm = dd(ANNUAL_MEETING_DATE); M["days_to_meeting"] = str(dm) if dm is not None else None
     dp = dd(PILL_EXPIRY_DATE); M["days_to_pill"] = str(dp) if dp is not None else None
+
+    # — control stack —
+    M["coalition_pct"] = f"{control['coalition']:.1f}"
+    M["supermajority"] = f"{control['supermajority']:.1f}"
+    M["coalition_gap"] = f"{control['supermajority'] - control['coalition']:.1f}"
+    if control.get("danone_now") is not None:
+        M["danone_now"] = f"{control['danone_now']:.1f}"
+    if control.get("danone_then") is not None and control.get("danone_now") is not None:
+        M["danone_delta"] = f"{control['danone_now'] - control['danone_then']:+.1f}"
+    dstand = dd(STANDSTILL_DATE); M["days_to_standstill"] = str(dstand) if dstand is not None else None
+    M["street_pt"] = f"{STREET_PT:.0f}"
+    M["aspiration"] = f"{ASPIRATION_PRICE:.0f}"
 
     # — financial —
     qrev_latest = _last_non_null(fin["qrev"]["actual"])
@@ -811,7 +880,7 @@ def render_quick_read(D: dict, qr: dict) -> str:
     tiles = [
         ("Last close", fmt_num(qr["last_close"], dollars=True, dp=2), close_sub, ""),
         (f"Discount to ${DANONE_BID_2:.0f} bid", fmt_pct(qr["discount"]), "vs withdrawn Danone offer", disc_cls),
-        ("Two-bloc control", f"{qr['control']:.1f}%", f"{qr['family']:.1f}% family + {qr['danone']:.0f}% Danone", ""),
+        ("Two-bloc control", f"{qr['control']:.1f}%", f"{qr['family']:.1f}% family + {qr['danone']:.1f}% Danone · est.", ""),
         ("YoY-growth streak", f"{qr['streak']} qtrs", "consecutive quarters", "pos"),
     ]
     htiles = ""
@@ -826,7 +895,7 @@ def render_quick_read(D: dict, qr: dict) -> str:
                   f'<div class="timeline-tier">{t["tier"]}</div></div>')
     timeline = (f'<div class="timeline-strip"><div class="timeline-eyebrow">Forward catalysts</div>'
                 f'<div class="timeline-rows">{strip}</div></div>') if strip else ""
-    return (section_header("00", "Quick read",
+    return (section_header("S0", "Quick read",
                            "Where the stock sits vs the takeover anchor — and what's next", "quick-read")
             + f'<div class="hero-row">{htiles}</div>' + timeline)
 
@@ -859,13 +928,73 @@ def render_setup(D: dict) -> str:
             "red band = the two-day cluster.",
             "Source: Yahoo Finance daily close · seed cluster — Form 4 / SC 13G / 424B (verify)",
             "Price ($)", "big")
-    return (section_header("01", "The setup",
+    return (section_header("S1", "The setup",
                            "Control optionality stacked on a compounding category story", "setup")
             + body + chart + regime)
 
 
+def render_control(D: dict, M: dict, control: dict) -> str:
+    head = section_header("S2", "The control stack",
+                          "Who holds the register, the standstill/pill/AGM clock, and the coalition math", "control")
+    own = control["ownership"]
+    if own["dates"]:
+        own_chart = chart_card("ownershipChart", "Ownership over time",
+            "Family / Danone / management / float — Danone trimming after the May-14 secondary",
+            "Source: 13D/G + proxy + secondary (seed; pre/post-secondary splits estimated — verify vs 13D/A)",
+            "% of shares out", "big")
+    else:
+        own_chart = placeholder("Ownership-over-time chart needs <code>data/ownership_timeline.csv</code>.")
+
+    ds = M.get("days_to_standstill")
+    coal = control["coalition"]; thr = control["supermajority"]
+    fill = max(0.0, min(100.0, coal)); markpos = max(0.0, min(100.0, thr))
+    dn = control.get("danone_now"); dt0 = control.get("danone_then")
+    dn_val = f"{dn:.1f}%" if dn is not None else "—"
+    dn_sub = (f"{dt0:.0f}% → {dn:.1f}% since 2024 · est." if (dn is not None and dt0 is not None) else "post-secondary · est.")
+    cards = (
+        '<div class="hero-row" style="grid-template-columns:repeat(3,1fr)">'
+        f'<div class="hero-tile"><div class="hero-label">Standstill expiry</div>'
+        f'<div class="hero-val">{ds or "—"}<span class="unit"> days</span></div>'
+        f'<div class="hero-sub">{STANDSTILL_DATE} · re-bid window opens</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Coalition vs ⅔ supermajority</div>'
+        f'<div class="hero-val">{coal:.1f}<span class="unit">% / {thr:.1f}%</span></div>'
+        f'<div class="coalition-bar"><div class="coalition-fill" style="width:{fill:.1f}%"></div>'
+        f'<div class="coalition-mark" style="left:{markpos:.1f}%"></div></div>'
+        f'<div class="hero-sub">family + Danone if aligned — below the Illinois ⅔ bar</div></div>'
+        f'<div class="hero-tile"><div class="hero-label">Danone stake (post-secondary)</div>'
+        f'<div class="hero-val">{dn_val}</div>'
+        f'<div class="hero-sub">{dn_sub}</div></div>'
+        '</div>')
+
+    KIND_C = {"bid": BRAND_ACCENT2, "withdraw": BRAND_NEG, "distribution": BRAND_NEG,
+              "governance": BRAND_ACCENT, "standstill": BRAND_PURPLE, "pill": BRAND_PURPLE}
+    strip = ""
+    for t in control["timeline"]:
+        c = KIND_C.get(t["kind"], "#8b8b78")
+        note = f'<div class="cell-sub">{_esc(t["note"])}</div>' if t["note"] else ""
+        strip += (f'<div class="timeline-item"><div class="timeline-date" style="color:{c}">{t["date"]}</div>'
+                  f'<div class="timeline-text">{_esc(t["event"])}{note}</div>'
+                  f'<div class="timeline-tier">{t["kind"]}</div></div>')
+    timeline = (f'<div class="timeline-strip"><div class="timeline-eyebrow">Control timeline · standstill ⟶ pill ⟶ re-bid</div>'
+                f'<div class="timeline-rows">{strip}</div></div>') if strip else ""
+
+    feed = ""
+    if control["insiders"]:
+        dotc = {"distribution": "neg", "insider_buy": "pos", "institution": "mid"}
+        items = ""
+        for r in control["insiders"]:
+            dot = dotc.get(r["kind"], "mid")
+            items += (f'<div class="feed-item"><div class="feed-row1">'
+                      f'<span class="feed-date">{r["date"]}</span><span class="legend-dot {dot}"></span>'
+                      f'<span class="feed-meta"><strong>{_esc(r["actor"])}</strong> · {_esc(r["action"])}</span></div>'
+                      f'<div class="feed-excerpt">{_esc(r["detail"])}</div></div>')
+        feed = (f'<details class="article-log" open><summary>Insider / 13D-G activity · {len(control["insiders"])}</summary>'
+                f'<div class="feed-list">{items}</div></details>')
+    return head + own_chart + cards + timeline + feed
+
+
 def render_news(D: dict) -> str:
-    head = section_header("02", "News flow &amp; market reaction",
+    head = section_header("S3", "Stock &amp; news",
                           "The Danone saga in prices, plus what the press is covering now", "news")
     if not D["stock"].empty:
         ev_chart = chart_card("eventsChart", "Price &amp; event reactions",
@@ -916,7 +1045,7 @@ def render_news(D: dict) -> str:
 
 
 def render_milk(D: dict) -> str:
-    head = section_header("03", "Milk &amp; input costs",
+    head = section_header("S6", "Milk &amp; margin engine",
                           "Class III milk is the gross-margin swing factor for a dairy processor", "milk")
     if D["classiii"].empty:
         return head + placeholder("Milk price series unavailable.")
@@ -943,7 +1072,7 @@ def render_milk(D: dict) -> str:
 
 
 def render_brand(D: dict) -> str:
-    head = section_header("04", "Brand &amp; category demand",
+    head = section_header("S4", "Category &amp; consumer demand",
                           "Share of voice vs cultured-dairy peers, and kefir-category enthusiasm", "brand")
     blocks = []
     if not D["competitor_weekly"].empty:
@@ -994,7 +1123,7 @@ def render_brand(D: dict) -> str:
 
 
 def render_financial(D: dict, fin: dict) -> str:
-    head = section_header("05", "Financial trajectory &amp; valuation",
+    head = section_header("S7", "Financials &amp; valuation",
                           "Revenue growth, margin expansion, share-gain vs category, and the value bridge", "financial")
     qrev = chart_card("qrevChart", "Quarterly net-sales growth (YoY)",
                       "Bars colored by comp difficulty; faded bars = estimates",
@@ -1029,8 +1158,9 @@ def render_financial(D: dict, fin: dict) -> str:
 
 
 def render_demand(D: dict) -> str:
-    head = section_header("06", "Demand vs the tape",
-                          "Composite social demand (z-scored) against the share price, indexed", "demand")
+    head = section_header("S9", "Social signal · low-confidence",
+                          "Composite social demand (z-scored) vs the share price — kept as a low-confidence tile; "
+                          "demand is distribution-driven, not social", "demand")
     if D["reddit_weekly"].empty or D["stock"].empty:
         return head + placeholder("Demand-vs-tape overlay populates once both Reddit and stock data are present.")
     chart = chart_card("demandChart", "Social demand vs share price",
@@ -1172,6 +1302,10 @@ a:hover{text-decoration:underline}
 .hero-val{font-size:30px;font-weight:800;margin:4px 0 2px;color:var(--text)}
 .hero-val.pos{color:var(--pos)} .hero-val.neg{color:var(--neg)}
 .hero-sub{font-size:12.5px;color:var(--muted)}
+.hero-val .unit{font-size:14px;font-weight:600;color:var(--muted)}
+.coalition-bar{position:relative;height:10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin:9px 0 7px}
+.coalition-fill{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:6px 0 0 6px;opacity:.85}
+.coalition-mark{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--neg)}
 .stat-row{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:4px 0 12px;max-width:640px}
 .timeline-strip{background:var(--surface);border:1px solid var(--border);border-radius:12px;
   padding:14px 18px;margin:14px 0}
@@ -1330,6 +1464,19 @@ document.addEventListener('DOMContentLoaded', function(){
         y:{title:{display:true,text:'Price ($)'},grid:grid()}}}});
   })();
 
+  // S2 — ownership over time (stacked area to 100%)
+  (function(){ const o=d.control&&d.control.ownership; if(!o||!el('ownershipChart')||!o.dates.length) return;
+    const mk=(label,arr,color)=>({label,data:o.dates.map((dt,i)=>({x:dt,y:arr[i]})),
+      borderColor:color,backgroundColor:color+'cc',fill:true,tension:.2,pointRadius:2,borderWidth:1});
+    new Chart(el('ownershipChart'),{type:'line',data:{datasets:[
+      mk('Family (Smolyansky)',o.family,A), mk('Danone',o.danone,NEG),
+      mk('Management',o.mgmt,A2), mk('Float / public',o.float,A3)
+    ]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{position:'bottom'},tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y+'%'}}},
+      scales:{x:{type:'time',time:{unit:'year'},grid:{display:false}},
+        y:{stacked:true,min:0,max:100,title:{display:true,text:'% of shares out'},grid:grid()}}}});
+  })();
+
   // 02 — events (price + reaction dots)
   (function(){ const ne=d.news.events; if(!el('eventsChart')||!ne.dates.length) return;
     const dots=ne.events.filter(e=>e.y!=null).map(e=>({x:e.date,y:e.y,_e:e}));
@@ -1479,11 +1626,12 @@ def _json_default(o):
 def build_html(body: str, blob: dict) -> str:
     nav = ('<a class="nav-btn" href="#quick-read">Quick read</a>'
            '<a class="nav-btn" href="#setup">Setup</a>'
-           '<a class="nav-btn" href="#news">News</a>'
+           '<a class="nav-btn" href="#control">Control</a>'
+           '<a class="nav-btn" href="#news">Stock &amp; news</a>'
+           '<a class="nav-btn" href="#brand">Category</a>'
            '<a class="nav-btn" href="#milk">Milk</a>'
-           '<a class="nav-btn" href="#brand">Brand</a>'
            '<a class="nav-btn" href="#financial">Financials</a>'
-           '<a class="nav-btn" href="#demand">Demand</a>')
+           '<a class="nav-btn" href="#demand">Signal</a>')
     topbar = ('<div class="topbar"><div class="topbar-inner">'
               f'<h1>{BRAND_NAME} <span>· {TICKER} demand &amp; control</span></h1>'
               f'<div class="topbar-nav">{nav}'
@@ -1536,17 +1684,18 @@ def main():
     qr = compute_quick_read(D)
     fin = compute_financial(D)
     setup = compute_setup(D)
+    control = compute_control(D)
     news = compute_stock_news(D)
     milk = compute_milk(D)
     brand = compute_brand(D)
     demand = compute_demand_vs_stock(D)
-    M = compute_metrics(D, qr, fin, brand, milk, demand)
+    M = compute_metrics(D, qr, fin, brand, milk, demand, control)
     blob = {
         "accent": BRAND_ACCENT, "accent2": BRAND_ACCENT2, "accent3": BRAND_ACCENT3,
         "accent_neg": BRAND_NEG, "purple": BRAND_PURPLE, "brown": BRAND_BROWN, "blue": BRAND_BLUE,
         "topic_colors": TOPIC_COLORS, "topic_labels": TOPIC_LABELS,
         "reaction_colors": REACTION_COLORS, "sov_colors": BRAND_SOV_COLORS,
-        "setup": setup, "news": news, "milk": milk, "brand": brand,
+        "setup": setup, "control": control, "news": news, "milk": milk, "brand": brand,
         "fin": fin, "demand": demand,
     }
 
@@ -1560,9 +1709,10 @@ def main():
         + render_dashboard_questions(M)
         + sect(render_quick_read(D, qr), "quick-read")
         + sect(render_setup(D), "setup")
+        + sect(render_control(D, M, control), "control")
         + sect(render_news(D), "news")
-        + sect(render_milk(D), "milk")
         + sect(render_brand(D), "brand")
+        + sect(render_milk(D), "milk")
         + sect(render_financial(D, fin), "financial")
         + sect(render_demand(D), "demand")
         + '</div>'
