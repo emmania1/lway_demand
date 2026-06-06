@@ -1,6 +1,6 @@
 # Callout anchor ledger
 
-_Generated 2026-06-05 15:34 · 39 interpretive lines · 39 anchored · 0 flagged_
+_Generated 2026-06-05 15:54 · 39 interpretive lines · 39 anchored · 0 flagged_
 
 - `OK  ` **forces/Danone overhang** (force) → days_to_pill, discount_bid2, bid2
 - `OK  ` **forces/Family control fight** (force) → days_to_meeting, family_pct

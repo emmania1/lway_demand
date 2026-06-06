@@ -1,8 +1,9 @@
 """Milk market prices — BLS CPI milk (real) + USDA Class III seed cross-check.
 
-Milk is the commodity input proxy for a dairy processor: USDA Class III (the
-cheese/butter milk-pricing class most relevant to cultured-dairy makers) drives
-gross-margin pressure; BLS CPI retail milk is the consumer-facing cross-check.
+Milk is the commodity input proxy for a dairy processor. Kefir's true input is
+USDA Class II (soft/cultured products); Class III (the cheese grade) is fetched
+here as a closely-correlated proxy until a live Class II series is wired. Lower
+milk $/cwt = gross-margin tailwind; BLS CPI retail milk is the consumer cross-check.
 
 Real-source attempts:
   1. BLS public API for CPI milk series APU0000709112

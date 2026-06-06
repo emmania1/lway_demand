@@ -577,6 +577,11 @@ def compute_competitors(D: dict) -> dict:
     def num(v):
         return None if (v is None or v == "" or pd.isna(v)) else float(v)
 
+    def bounded(v, lo, hi):
+        # reject missing / non-positive / absurd multiples → renders "—", not charted
+        x = num(v)
+        return x if (x is not None and lo < x <= hi) else None
+
     peers = []
     pv = D["peer_val"]
     as_of = None
@@ -585,8 +590,9 @@ def compute_competitors(D: dict) -> dict:
             as_of = str(pv.iloc[0]["as_of"])
         for _, r in pv.iterrows():
             peers.append({"ticker": str(r.get("ticker", "")), "company": str(r.get("company", "")),
-                          "ev_sales": num(r.get("ev_sales")), "ev_ebitda": num(r.get("ev_ebitda")),
-                          "pe": num(r.get("pe")), "is_self": str(r.get("ticker", "")) == TICKER})
+                          "ev_sales": bounded(r.get("ev_sales"), 0, 50),
+                          "ev_ebitda": bounded(r.get("ev_ebitda"), 0, 100),
+                          "pe": bounded(r.get("pe"), 0, 500), "is_self": str(r.get("ticker", "")) == TICKER})
     peer_eb = sorted(p["ev_ebitda"] for p in peers if p["ev_ebitda"] is not None and not p["is_self"])
     n = len(peer_eb)
     median = (peer_eb[n // 2] if n % 2 else (peer_eb[n // 2 - 1] + peer_eb[n // 2]) / 2) if n else None
@@ -927,7 +933,7 @@ def compute_metrics(D, qr, fin, brand, milk, demand, control, liq, category, wel
     M["cat_latest"] = f"{cat_c:.0f}" if cat_c is not None else None
     M["cat_gap"] = f"{lway_c - cat_c:.0f}" if (lway_c is not None and cat_c is not None) else None
 
-    # — milk (Class III) —
+    # — milk (Class III shown as proxy for kefir's true Class II input) —
     mlatest = mmonth = myoy = None
     c3 = D["classiii"]
     if not c3.empty and {"month", "class_iii_price"}.issubset(c3.columns):
@@ -1305,8 +1311,8 @@ def render_milk(D: dict) -> str:
 
 
 def render_brand(D: dict) -> str:
-    head = section_header("—", "Social mentions · low-confidence",
-                          "Reddit / YouTube share-of-voice — a low-confidence tile; demand is distribution-driven, not social", "brand")
+    head = section_header("—", "Social mentions · low-confidence proxy",
+                          "Reddit / YouTube share-of-voice — a low-confidence proxy only; demand is distribution-driven, not social", "brand")
     blocks = []
     if not D["competitor_weekly"].empty:
         blocks.append(chart_card("brandSovChart", "Share of voice · cultured-dairy brands",
@@ -1467,8 +1473,19 @@ def render_wellness(D: dict, M: dict, well: dict) -> str:
                       f'<span class="badge badge-{tcls}">{tlabel}</span></div>'
                       f'<div class="feed-excerpt"><strong>{_esc(it["headline"])}</strong>'
                       f'<span class="muted-cell">{strg}</span></div></div>')
-    return (head + '<div class="article-log" style="padding:8px 16px">'
+    feed = ('<div class="article-log" style="padding:8px 16px">'
             f'<div class="feed-list">{cards}</div></div>')
+    TAKES = [("Gut health · CORE", "gut_health_take.md"),
+             ("Protein · CORE", "protein_take.md"),
+             ("GLP-1 · accelerant", "glp1_take.md"),
+             ("Full-fat dairy · regulatory", "full_fat_dairy_take.md")]
+    tk = ""
+    for label, fn in TAKES:
+        md = load_markdown(READS / fn)
+        if md and md.get("html"):
+            tk += f'<div class="chart-take"><div class="take-eyebrow">{label}</div>{md["html"]}</div>'
+    takes_block = f'<div class="dual-col" style="margin-top:14px">{tk}</div>' if tk else ""
+    return head + feed + takes_block
 
 
 def render_liquidity(D: dict, M: dict, liq: dict) -> str:
@@ -1600,8 +1617,8 @@ def render_competitors(D: dict, M: dict, comp: dict) -> str:
 
 
 def render_demand(D: dict) -> str:
-    head = section_header("—", "Social signal · low-confidence",
-                          "Composite social demand (z-scored) vs the share price — kept as a low-confidence tile; "
+    head = section_header("—", "Social signal · low-confidence proxy",
+                          "Composite social demand (z-scored) vs the share price — kept as a low-confidence proxy; "
                           "demand is distribution-driven, not social", "demand")
     if D["reddit_weekly"].empty or D["stock"].empty:
         return head + placeholder("Demand-vs-tape overlay populates once both Reddit and stock data are present.")
@@ -1628,8 +1645,8 @@ def render_summary_modal(D: dict, qr: dict, fin: dict) -> str:
     paras.append(
         f"<p>Operationally the franchise is accelerating: Q1 2026 net sales of ${Q1_2026_SALES:.0f}M (+{Q1_2026_SALES_YOY}%) "
         f"marked the {CONSEC_QUARTERS}th consecutive YoY-growth quarter, gross margin reached {Q1_2026_GM:.1f}%, and Lifeway is "
-        "taking share well above the high-single-digit kefir category as gut-health demand broadens. Lower Class III milk is a "
-        "margin tailwind into the back half.</p>")
+        "taking share well above the high-single-digit kefir category as gut-health demand broadens. Lower milk costs "
+        "(Class II is kefir's input; Class III shown as a correlated proxy) are a margin tailwind into the back half.</p>")
     paras.append(
         f"<p><strong>Bottom line:</strong> two strategic blocs, an accelerating category, and a pill expiry stack optionality on "
         f"top of a business that already clears a mid-$20s stand-alone value — with a strategic re-bid scenario toward "
@@ -1965,7 +1982,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // 03 — milk (dual axis)
   (function(){ const mk=d.milk; if(!el('milkChart')||!mk.classiii.months.length) return;
-    const ds=[{label:'Class III ($/cwt)',data:mk.classiii.months.map((m,i)=>({x:m,y:mk.classiii.vals[i]})),
+    const ds=[{label:'Class III ($/cwt, proxy)',data:mk.classiii.months.map((m,i)=>({x:m,y:mk.classiii.vals[i]})),
       borderColor:A,backgroundColor:'rgba(31,78,121,0.07)',borderWidth:2,fill:true,tension:.2,pointRadius:0,yAxisID:'y'}];
     if(mk.cpi.months.length){ ds.push({label:'CPI retail milk ($/gal)',
       data:mk.cpi.months.map((m,i)=>({x:m,y:mk.cpi.vals[i]})),borderColor:A2,borderWidth:2,
